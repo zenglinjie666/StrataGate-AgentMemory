@@ -262,13 +262,13 @@ events 是本批新增或变化的事件，也是新增或改写事实的唯一�
 这些事件卡是有界的导航材料，标题或摘要可能省略尾部；不要因未看到否定、后续更新或限制条件就推断当前事实、完成状态或没有争议。完整事实仍须展开事件和原文取证。status、supersededBy、temporal.status 及其明确关系提供的历史、计划、取消和冲突标记必须保留；材料不足时只写覆盖范围或待确认，不补写结论。
 truncatedEventIds 明确列出未完整提供的事件：引用其中任何事件的概要段只能是 scope，只说明资料范围，不写历史、决定、变化或待确认的事实；混合引用其他事件也不能放宽此限制。
 
-Topic 是长期的大章节，按项目、生活领域或长期关系组织，而不是每个事件或子任务一章。例如 StrataGate UI、DSH 兼容、Topic Directory、Retrieval 应归入“StrataGate”同一章；求职投递、面试和实习进展归入“求职与职业发展”。在章内用 overview.title 区分具体事项，例如“界面与交互”“DSH 兼容”；kind 表示该节内容性质，不是拆章依据。不同项目或不相关领域仍分开，不能为减少章数硬合并。每批通常只新增 0-2 个大章节；12 是互不相关领域的安全上限，不是创建目标。
+Topic 是长期的大章节，按项目、生活领域或长期关系组织，而不是每个事件或子任务一章。例如 StrataGate UI、DSH 兼容、Topic Directory、Retrieval 应归入“StrataGate”同一章；求职投递、面试和实习进展归入“求职与职业发展”。existingTopics.sectionTitles 列出该章全部已有小节标题，仅供导航，不是正文或事实证据。已有小节能容纳本批事项时必须逐字复用原 title，不要近义改名；不能因为 overview 只展示前几段就重复创建小节。确实属于新事项才新增小节。在章内用 overview.title 区分具体事项，例如“界面与交互”“DSH 兼容”；kind 表示该节内容性质，不是拆章依据。不同项目或不相关领域仍分开，不能为减少章数硬合并。每批通常只新增 0-2 个大章节；12 是互不相关领域的安全上限，不是创建目标。
 每个本批事件必须至少分配给一个章节；即使尚未进入图谱也要保留入口。同一项目下不同事件、时间和决定可以共用章节，归类不等于把事实合并或认定它们相同。先检查所有 existingTopics 的范围，能容纳本批事项就优先复用 topicId，即使标题没有该子任务关键词；不要为子功能、版本、一次投递或发布另建章节。同名章节只能返回一次。新增章节省略 topicId；旧章节未展示的成员由存储层保留，不要猜测或补齐其内容。每个章节 sourceEventIds 只写实际给出的事件编号；每段来源必须属于该章节的 sourceEventIds。candidateTopicsOmitted 表示受输入预算限制未展示的候选数，不能推断被省略章节的内容。
 
 title 是可识别的主题名称；description 用一句话说明这里存有哪些资料，例如“包含部署选型、迁移经过和遗留问题”，不要把历史结论写成当前事实。overview 的 kind 仅允许 scope（背景或覆盖范围）、history（历史进展）、decision（当时的决定）、change（有依据的变化）、open-question（待确认事项）。保留明确时点、过去式、计划、取消、争议和不确定性；没有新的支持不能把旧事实升格为当前结论，不能把计划写成已完成、建议写成已决定、推测写成原因。决定曾经成立不等于现在仍有效。相关事件矛盾时保留矛盾和待确认状态。
 
 outputTokenBudget 是整个响应的输出预算。优先完整分配本批所有事件，再写必要的简短名称、范围说明和新增段。存储层会自动继承有效旧概要，无需输出复述；通常只需 0-2 段新增概要，预算不足时 overview 可为空，只建立目录入口，不截断 JSON 或遗漏事件。
-每批最多 12 个主题；title 最多 120 个字符，description 最多 400 个字符，但尽量用短名称和一句范围说明；每个主题最多 8 段概要，每段最多 600 个字符、12 个来源。不要重复标题、目录说明、已有概要或无关背景。不要生成经验层或另写新的事件。`
+每批最多 12 个主题；title 最多 120 个字符，description 最多 400 个字符，但尽量用短名称和一句范围说明；每个主题在本次响应最多 8 段概要；这不是累计章节的段数或节数上限，有效旧段由存储层保留。每段最多 600 个字符、12 个来源。不要重复标题、目录说明、已有概要或无关背景。不要生成经验层或另写新的事件。`
 const MAX_TOPIC_INPUT_TOKENS = 20_000
 
 const EXTERNAL_MEMORY_DECIDER_PARAMETERS: ParameterSchemaSpec = {
@@ -431,7 +431,7 @@ function topicProjectionPayload(context: TopicProjectionContext, outputTokenBudg
       truncatedEventIds: context.truncatedEventIds ?? [],
       existingTopics: existingTopics.map((topic) => ({
         id: topic.id, title: topic.title, description: topic.description,
-        overview: topic.overview, sourceEventIds: topic.sourceEventIds, totalSourceEvents: topic.totalSourceEvents,
+        overview: topic.overview, ...(topic.sectionTitles ? { sectionTitles: topic.sectionTitles } : {}), sourceEventIds: topic.sourceEventIds, totalSourceEvents: topic.totalSourceEvents,
       })),
       candidateTopicsOmitted: context.existingTopics.length - existingTopics.length,
     }

@@ -591,6 +591,50 @@ describe('memory topic runtime boundaries', () => {
     }
   })
 
+
+  it('shares the persistent historical allowance for chapter rebuilds, with changed/new inputs taking priority', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-rebuild-budget-'));
+    const database = join(directory, 'memory.db'); const namespace = 'dsh:project:rebuild-budget';
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const topicProjector = vi.fn(async (context: TopicProjectionContext): Promise<TopicProjectionResult> => ({
+      topics: [{ topicId: context.existingTopics[0]!.id, title: '部署历史', description: '资料',
+        sourceEventIds: context.events.map(({ id }) => id), overview: [] }],
+    }));
+    const createRuntime = () => new StrataGateRuntime(makeConfig(database), {
+      ...makeModels().models, isReady: () => true, topicProjector,
+    } as unknown as DshModelBridge);
+    let runtime = createRuntime(); let worker = manualWorker(runtime);
+    try {
+      const history = Array.from({ length: 29 }, (_, index) => ({ id: `old-${index}`, title: '部署记录', summary: '历史', topic: '部署历史' }));
+      await seed(database, namespace, history);
+      let writer = await StrataGate.open({ database, namespace });
+      await writer.forgetEvent('old-0'); await writer.close();
+      for (let round = 0; round < 8; round++) await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(2);
+      expect(topicProjector.mock.calls.flatMap(([context]) => context.events)).toHaveLength(24);
+      const state = (await runtime.adminSnapshot(namespace))!.memoryTopicState!;
+      expect(state.bootstrap?.status).toBe('completed'); // Writer-open history remains frozen.
+      expect(Object.keys(state.rebuildVersions!)).toHaveLength(4);
+      await runtime.close(); runtime = createRuntime(); worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(2);
+      writer = await StrataGate.open({ database, namespace });
+      const changed = writer.listAllEvents().find(({ id }) => id === 'old-28')!;
+      changed.temporal.status = 'cancelled'; await writer.pinEvent(changed.id); await writer.close();
+      await seed(database, namespace, [{ id: 'new-event', title: '新增部署决定', summary: '新资料', topic: '部署历史' }], false);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(3);
+      expect(new Set(topicProjector.mock.calls[2]![0].events.map(({ id }) => id))).toEqual(new Set(['old-28', 'new-event']));
+      for (let round = 0; round < 4; round++) await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(3); // Collateral old members still cannot bypass the allowance.
+      now += TOPIC_BOOTSTRAP_WINDOW_MS;
+      for (let round = 0; round < 4; round++) await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(5);
+      const budgeted = topicProjector.mock.calls.slice(3).flatMap(([context]) => context.events.map(({ id }) => id));
+      expect(budgeted).not.toContain('old-28'); expect(budgeted).not.toContain('new-event');
+    } finally { clock.mockRestore(); await runtime.close(); await rm(directory, { recursive: true, force: true }); }
+  }, 45_000);
+
   // This fixture writes 61 Events and reopens SQLite across several windows;
   // allow slow Windows CI disks without changing the fake-clock cost bounds.
   it('persists a database-wide backfill budget across restarts, prioritizes new Events and resumes in later windows', async () => {

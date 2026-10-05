@@ -34,6 +34,8 @@ export interface TopicProjectionCandidate {
   title: string;
   description: string;
   overview: MemoryTopicOverview[];
+  /** Complete lightweight section labels, including sections outside overview. */
+  sectionTitles?: string[];
   /** Only sources actually exposed in this bounded candidate, not all members. */
   sourceEventIds: string[];
   totalSourceEvents: number;
@@ -104,6 +106,8 @@ export interface MemoryTopicState {
   jobs: TopicProjectionJob[];
   projectedVersions: Record<string, string>;
   bootstrap?: TopicBootstrapState;
+  /** Unchanged old inputs invalidated by another dependency; share the historical budget. */
+  rebuildVersions?: Record<string, string>;
 }
 
 function canonical(value: unknown): unknown {
@@ -132,6 +136,23 @@ function topicTemporal(event: EventCard): EventCard['temporal'] {
 const visible = (event: EventCard): boolean => event.status === 'active' || event.status === 'superseded';
 const unique = (ids: readonly string[]): string[] => [...new Set(ids)];
 const bounded = (value: string, size: number): string => [...value].slice(0, size).join('');
+
+const SECTION_TITLES: Record<MemoryTopicOverviewKind, string> = {
+  history: '发展脉络', decision: '关键设计决策', change: '重要变化', 'open-question': '尚未解决的问题', scope: '主题范围',
+};
+/** One display-label rule for model routing and the book view. */
+export function memoryTopicSectionTitle(part: MemoryTopicOverview): string {
+  return part.title?.trim() || SECTION_TITLES[part.kind] || '主题概览';
+}
+const normalizedLabel = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+function sectionTitles(topic: Pick<MemoryTopic, 'overview'>): string[] {
+  const titles = new Map<string, string>();
+  for (const part of topic.overview) {
+    const title = memoryTopicSectionTitle(part);
+    if (!titles.has(normalizedLabel(title))) titles.set(normalizedLabel(title), title);
+  }
+  return [...titles.values()];
+}
 
 function sourceVersions(sources: ReadonlyMap<string, EventCard>): ReadonlyMap<string, string> {
   return new Map([...sources].map(([id, event]) => [id, memoryTopicEventFingerprint(event)]));
@@ -182,6 +203,14 @@ export class MemoryTopicDirectory {
 
   restore(state?: MemoryTopicState): void {
     this.state = state ? structuredClone(state) : { topics: [], jobs: [], projectedVersions: {} };
+    // Older prerelease snapshots already cleared their projected ledger on
+    // invalidation. Conservatively budget that backlog rather than paying it
+    // again as unlimited incremental work after an upgrade/restart.
+    if (state && state.rebuildVersions === undefined && state.topics.some((topic) => topic.invalidated)) {
+      this.state.rebuildVersions = Object.fromEntries(state.topics.filter((topic) => topic.invalidated)
+        .flatMap((topic) => Object.entries(topic.sourceVersions)
+          .filter(([id, version]) => state.projectedVersions[id] !== version)));
+    }
   }
 
   snapshot(events?: readonly EventCard[]): MemoryTopicState {
@@ -242,7 +271,15 @@ export class MemoryTopicDirectory {
         topic.title = '';
         topic.description = '';
         topic.overview = [];
-        for (const id of topic.sourceEventIds) if (sources.has(id)) delete this.state.projectedVersions[id];
+        for (const id of topic.sourceEventIds) if (sources.has(id)) {
+          const version = versions.get(id)!;
+          // Only genuinely changed/new versions bypass the historical allowance.
+          // Keep this ledger separate from the immutable writer-open Bootstrap.
+          if (topic.sourceVersions[id] === version && this.state.projectedVersions[id] === version) {
+            (this.state.rebuildVersions ??= {})[id] = version;
+          }
+          delete this.state.projectedVersions[id];
+        }
         // Record the invalidation once. A later successful batch must not be
         // dirtied again merely because this old, redacted topic still exists.
         topic.sourceVersions = Object.fromEntries(topic.sourceEventIds.filter((id) => sources.has(id))
@@ -267,6 +304,9 @@ export class MemoryTopicDirectory {
       job.status === 'failed' && !job.superseded && job.attempts >= TOPIC_MAX_ATTEMPTS)]
       .map((job) => job.id));
     this.state.jobs = this.state.jobs.filter((job) => !finished.includes(job) || retain.has(job.id));
+    for (const [id, version] of Object.entries(this.state.rebuildVersions ?? {})) {
+      if (versions.get(id) !== version || this.state.projectedVersions[id] === version) delete this.state.rebuildVersions![id];
+    }
     const bootstrap = this.state.bootstrap;
     if (bootstrap && bootstrap.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION) {
       const outstanding = Object.entries(bootstrap.sourceVersions).filter(([id, version]) =>
@@ -309,7 +349,8 @@ export class MemoryTopicDirectory {
 
   private isBootstrap(id: string, version: string): boolean {
     const bootstrap = this.state.bootstrap;
-    return !bootstrap || bootstrap.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
+    return this.state.rebuildVersions?.[id] === version
+      || !bootstrap || bootstrap.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
       || (bootstrap.status !== 'completed' && bootstrap.sourceVersions[id] === version);
   }
 
@@ -392,7 +433,7 @@ export class MemoryTopicDirectory {
     const query = batch.map(compactEvent).map((event) => `${event.title} ${event.summary} ${event.tags.join(' ')}`).join(' ');
     const eligibleTopics = this.list(events).filter((topic) => !topic.id.startsWith('fallback:'));
     const lexicalScores = new Map(bm25Rank(eligibleTopics, query, (topic) => weightedSearchTokens([
-      [topic.title, 8], [topic.description, 2],
+      [topic.title, 8], [topic.description, 2], [sectionTitles(topic).join(' '), 6],
       // Route broad chapters by bounded member hints as well. These hints
       // select candidates locally; they are never new factual model evidence.
       [topic.sourceEventIds.slice(0, 3).concat(topic.sourceEventIds.slice(-3))
@@ -410,7 +451,7 @@ export class MemoryTopicDirectory {
       const exposed = unique([...overview.flatMap((part) => part.sourceEventIds),
         ...topic.sourceEventIds.filter((id) => batchIds.has(id))]);
       const candidate = { id: topic.id, title: topic.title, description: topic.description,
-        overview, sourceEventIds: exposed, totalSourceEvents: topic.sourceEventIds.length };
+        overview, sectionTitles: sectionTitles(topic), sourceEventIds: exposed, totalSourceEvents: topic.sourceEventIds.length };
       const cost = JSON.stringify(candidate).length;
       if (cost > remaining) continue;
       remaining -= cost; existingTopics.push(candidate);
@@ -473,11 +514,19 @@ export class MemoryTopicDirectory {
       const inferred = matching.length === 1 && result.topics.filter((other) =>
         Array.isArray(other.sourceEventIds) && matching[0]!.sourceEventIds.some((eventId) => other.sourceEventIds.includes(eventId))).length === 1
         ? matching[0] : undefined;
-      const label = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+      const label = normalizedLabel;
       const sameLabel = typeof proposal.title === 'string' ? this.state.topics.filter((topic) =>
-        !topic.invalidated && candidates.has(topic.id) && label(topic.title) === label(proposal.title)) : [];
+        !topic.invalidated && label(topic.title) === label(proposal.title)) : [];
+      // A bounded shortlist is not the global chapter namespace. Never create
+      // a duplicate just because the matching chapter was not exposed.
+      if (sameLabel.some((topic) => !candidates.has(topic.id))) {
+        throw new Error('Invalid duplicate chapter label matches an unexposed existing topic.');
+      }
       const existing = proposal.topicId ? this.state.topics.find((topic) => topic.id === proposal.topicId)
         : inferred ?? (sameLabel.length === 1 ? sameLabel[0] : undefined);
+      if (sameLabel.some((topic) => topic.id !== existing?.id)) {
+        throw new Error('Invalid duplicate chapter label conflicts with an existing topic.');
+      }
       if (typeof proposal.title === 'string') {
         const key = label(proposal.title);
         if (labels.has(key)) throw new Error('Invalid duplicate chapter label in one projection.');
@@ -490,7 +539,7 @@ export class MemoryTopicDirectory {
       if (typeof proposal.title !== 'string' || !proposal.title.trim() || [...proposal.title].length > 120
         || typeof proposal.description !== 'string' || !proposal.description.trim() || [...proposal.description].length > 400) throw new Error('Invalid topic title or description.');
       for (const eventId of ids) if (batchIds.has(eventId)) covered.add(eventId);
-      if (!Array.isArray(proposal.overview) || proposal.overview.length > 8) throw new Error('Topic overview must contain at most 8 sections.');
+      if (!Array.isArray(proposal.overview) || proposal.overview.length > 8) throw new Error('Topic projection must contain at most 8 overview paragraphs per chapter per batch.');
       for (const part of proposal.overview) {
         if (part.title !== undefined && (typeof part.title !== 'string' || !part.title.trim()
           || [...part.title].length > 80)) throw new Error('Invalid topic overview title.');
@@ -507,8 +556,9 @@ export class MemoryTopicDirectory {
       const membership = unique([...(existing?.sourceEventIds ?? []).filter((eventId) => sources.has(eventId)), ...ids]);
       const inherited = existing && !existing.invalidated ? existing.overview : [];
       const overview = unique(proposal.overview.map((part) => JSON.stringify(part))).map((part) => JSON.parse(part) as MemoryTopicOverview);
-      // Retain old sections when room permits; every member remains indexed even beyond this overview cap.
-      for (const part of inherited) if (overview.length < 8 && !overview.some((current) => digest(current) === digest(part))) overview.push(structuredClone(part));
+      // Eight limits one model response, not the accumulated chapter. Never
+      // silently evict a valid paragraph or its section to admit newer prose.
+      for (const part of inherited) if (!overview.some((current) => digest(current) === digest(part))) overview.push(structuredClone(part));
       proposals.push({ id: topicId, title: proposal.title.trim(), description: proposal.description.trim(),
         sourceEventIds: membership, overview, sourceVersions: Object.fromEntries(membership.map((eventId) => [eventId, versions.get(eventId)!])),
         dependencyVersions: { ...(!existing?.invalidated ? existing?.dependencyVersions ?? {} : {}), ...job.dependencyVersions },
@@ -521,6 +571,9 @@ export class MemoryTopicDirectory {
       if (index < 0) this.state.topics.push(topic); else this.state.topics[index] = topic;
     }
     Object.assign(this.state.projectedVersions, job.sourceVersions);
+    for (const [eventId, version] of Object.entries(job.sourceVersions)) {
+      if (this.state.rebuildVersions?.[eventId] === version) delete this.state.rebuildVersions[eventId];
+    }
     // A redacted predecessor may span several batches or an ambiguous result.
     // Retire it only once every surviving member has actually been projected.
     this.state.topics = this.state.topics.filter((topic) => !topic.invalidated

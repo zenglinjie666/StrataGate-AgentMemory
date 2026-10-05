@@ -70,7 +70,7 @@ export function registerMemoryTools(ctx: Context, runtime: StrataGateRuntime): v
 
   ctx.tools.register(defineTool({
     name: 'memory_list_topics',
-    description: 'This tool is provided by the StrataGate plugin. 浏览当前记忆空间的主题目录。可按分类分页，或用 query 查主题名称及简介。未整理的事件也有入口。目录仅供导航，不创建证据批次，不强化记忆；找到相关主题后调用 memory_expand_topic，实际引用事实前检索并评估来源事件。',
+    description: 'This tool is provided by the StrataGate plugin. 浏览当前记忆空间的主题目录。可按分类分页，或用 query 查主题名称及简介。未整理的事件也有入口。目录仅供导航，不创建证据批次，不强化记忆；需要主题脉络时调用 memory_expand_topic；需要事实证据可直接 memory_search_events(topic_id)，并评估来源事件。',
     parameters: {
       query: { type: 'string', description: '可选的主题关键词；省略时浏览完整目录。' },
       category: { type: 'string', enum: ['preferences', 'decisions', 'work', 'relationships', 'other'] as const },

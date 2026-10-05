@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { StrataGate, MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, TOPIC_LEASE_MS, normalizeSnapshot, type TopicProjectionContext, type TopicProjectionResult } from '../src/index.js';
+import { StrataGate, MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, TOPIC_LEASE_MS, normalizeSnapshot, memoryTopicEventFingerprint, type TopicProjectionContext, type TopicProjectionResult } from '../src/index.js';
 import { SqliteStorage } from '../src/sqlite.js';
 
 const summarizer = async () => ({ l0Title: '对话', l0Tags: [], l1Summary: '对话', l2Keypoints: [], shouldExtract: false });
@@ -28,6 +28,173 @@ function projection(context: TopicProjectionContext, topicId?: string): TopicPro
 }
 
 describe('rebuildable Event-backed topic directory', () => {
+  it('keeps exhausted collateral rebuild retries historical even after Bootstrap originally completed', async () => {
+    let clock = Date.parse('2026-10-06T00:00:00Z');
+    const memory = StrataGate.inMemory(options); const events = await seed(memory, 2);
+    const directory = new MemoryTopicDirectory(); const now = () => new Date(clock).toISOString();
+    directory.initializeBootstrap([], now());
+    const initial = directory.claim(events, now(), 'incremental')!;
+    directory.complete(initial.jobId, projection(initial), events, now());
+    events[0]!.status = 'forgotten'; directory.synchronize(events, now());
+    let job = directory.claim(events, now(), 'bootstrap')!;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      directory.fail(job.jobId, new Error('timeout'), now()); clock += 120_000;
+      if (attempt < 2) job = directory.claim(events, now(), 'bootstrap')!;
+    }
+    expect(directory.bootstrap()!.status).toBe('completed');
+    expect(directory.hasPending(events, clock)).toBe(false);
+    expect(directory.claim(events, now(), 'incremental')).toBeNull();
+    const retry = directory.retry(job.jobId, events, now());
+    const restarted = new MemoryTopicDirectory(); restarted.restore(directory.snapshot());
+    expect(restarted.hasPending(events, clock, 'incremental')).toBe(false);
+    const fresh = restarted.claim(events, now(), 'bootstrap')!;
+    expect(fresh.jobId).toBe(retry.jobId);
+    restarted.complete(fresh.jobId, projection(fresh), events, now());
+    expect(restarted.snapshot().rebuildVersions).toEqual({});
+    expect(restarted.hasPending(events, clock)).toBe(false);
+  });
+
+  it('rejects renaming an exposed chapter to another existing chapter label atomically', async () => {
+    const memory = StrataGate.inMemory(options); const events = await seed(memory, 2);
+    const initial = (await memory.claimNextTopicProjection())!;
+    const ids = (await memory.completeTopicProjection(initial.jobId, { topics: events.map((event, index) => ({
+      title: `章节 ${index}`, description: '资料', sourceEventIds: [event.id], overview: [],
+    })) })).topicIds;
+    const block = memory.listBlocks()[0]!;
+    const event = await memory.addEvent({ title: '新活动', summary: '新活动', sourceBlockId: block.id, sourceMessageIds: [] });
+    const job = (await memory.claimNextTopicProjection())!;
+    expect(job.existingTopics).toHaveLength(2);
+    const before = memory.exportSnapshot();
+    await expect(memory.completeTopicProjection(job.jobId, { topics: [{ topicId: ids[0]!, title: '章节 1',
+      description: '资料', sourceEventIds: [event.id], overview: [] }] })).rejects.toThrow(/duplicate chapter/);
+    expect(memory.exportSnapshot()).toEqual(before);
+  });
+
+  it.each(['forgotten', 'changed'] as const)('budgets 10,000-member collateral rebuilds after one source is %s, across restart', async (change) => {
+    const memory = StrataGate.inMemory(options);
+    const [template] = await seed(memory);
+    const events = Array.from({ length: 10_000 }, (_, index) => ({ ...structuredClone(template!), id: `large-${index}` }));
+    const versions = Object.fromEntries(events.map((event) => [event.id, memoryTopicEventFingerprint(event)]));
+    let directory = new MemoryTopicDirectory();
+    const now = new Date().toISOString();
+    directory.initializeBootstrap([], now);
+    const frozen = directory.bootstrap();
+    directory.restore({ ...directory.snapshot(), projectedVersions: versions, topics: [{
+      id: 'large-chapter', title: '旧章', description: '旧描述', sourceEventIds: events.map(({ id }) => id),
+      overview: [], sourceVersions: versions, dependencyVersions: versions,
+      createdAt: now, updatedAt: now, projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, invalidated: false,
+    }] });
+    if (change === 'forgotten') events[0]!.status = 'forgotten';
+    else events[0]!.temporal.status = 'cancelled';
+    directory.synchronize(events, now);
+    expect(Object.keys(directory.snapshot().rebuildVersions!)).toHaveLength(9_999);
+    expect(directory.bootstrap()).toEqual(frozen);
+    expect(directory.hasPending(events, Date.parse(now), 'incremental')).toBe(change === 'changed');
+    const incremental = directory.claim(events, now, 'incremental');
+    if (change === 'changed') {
+      expect(incremental!.events.map(({ id }) => id)).toEqual(['large-0']);
+      directory.complete(incremental!.jobId, projection(incremental!, 'large-chapter'), events, now);
+    } else expect(incremental).toBeNull();
+    const snapshot = directory.snapshot();
+    directory = new MemoryTopicDirectory(); directory.restore(snapshot);
+    expect(directory.hasPending(events, Date.parse(now), 'incremental')).toBe(false);
+    expect(directory.hasPending(events, Date.parse(now), 'bootstrap')).toBe(true);
+    const batch = directory.claim(events, now, 'bootstrap')!;
+    expect(batch.events).toHaveLength(12);
+    expect(batch.events.map(({ id }) => id)).not.toContain('large-0');
+    directory.complete(batch.jobId, projection(batch, 'large-chapter'), events, now);
+    expect(Object.keys(directory.snapshot().rebuildVersions!)).toHaveLength(9_987);
+    expect(directory.claim(events, now, 'incremental')).toBeNull();
+    expect(directory.bootstrap()).toEqual(frozen);
+  }, 30_000);
+
+  it('budgets collateral members for background dependency changes and old invalidated snapshots', async () => {
+    const memory = StrataGate.inMemory(options);
+    const events = await seed(memory, 3);
+    const directory = new MemoryTopicDirectory(); const now = new Date().toISOString();
+    directory.initializeBootstrap(events, now);
+    const job = directory.claim(events, now)!;
+    directory.complete(job.jobId, { topics: events.map((event) => ({ title: event.id, description: '资料',
+      sourceEventIds: [event.id], overview: [] })) }, events, now);
+    events[0]!.summary = 'changed background';
+    directory.synchronize(events, now);
+    expect(Object.keys(directory.snapshot().rebuildVersions!)).toEqual(events.slice(1).map(({ id }) => id));
+    const old = directory.snapshot(); delete old.rebuildVersions;
+    const restored = new MemoryTopicDirectory(); restored.restore(old);
+    expect(restored.claim(events, now, 'incremental')).toBeNull(); // Conservative old-version backlog recovery.
+    expect(restored.claim(events, now, 'bootstrap')!.events).toHaveLength(3);
+  });
+
+  it('retains eight existing sections and repeated paragraphs while exposing every label beyond the four prose samples', async () => {
+    const memory = StrataGate.inMemory(options);
+    const events = await seed(memory, 8);
+    const initial = (await memory.claimNextTopicProjection())!;
+    const overview = events.map((event, index) => ({ kind: 'history' as const, title: `事项 ${index}`, text: `原段 ${index}`, sourceEventIds: [event.id] }));
+    const id = (await memory.completeTopicProjection(initial.jobId, { topics: [{ title: '长期项目', description: '资料',
+      sourceEventIds: events.map(({ id }) => id), overview }] })).topicIds[0]!;
+    const block = memory.listBlocks()[0]!;
+    for (const title of ['事项 5', '第九个事项', '事项 5']) {
+      const event = await memory.addEvent({ title, summary: '新变化', sourceBlockId: block.id, sourceMessageIds: [] });
+      const job = (await memory.claimNextTopicProjection())!;
+      const candidate = job.existingTopics.find((topic) => topic.id === id)!;
+      expect(candidate.overview).toHaveLength(4);
+      expect(candidate.sectionTitles).toContain('事项 5');
+      expect(candidate.sectionTitles).toContain('事项 7');
+      expect(candidate.sourceEventIds).not.toContain(events[5]!.id); // A label grants no evidence capability.
+      await memory.completeTopicProjection(job.jobId, { topics: [{ topicId: id, title: '长期项目', description: '资料',
+        sourceEventIds: [event.id], overview: [{ kind: 'change', title, text: '新段 ' + event.id, sourceEventIds: [event.id] }] }] });
+      expect(memory.getMemoryTopic(id)!.overview).toEqual(expect.arrayContaining(overview));
+    }
+    expect(memory.getMemoryTopic(id)!.overview).toHaveLength(11);
+    await memory.close();
+  });
+
+  it('ranks by the sixth section even when only a middle chapter member carries the relevant subject', async () => {
+    const memory = StrataGate.inMemory(options);
+    const events = await seed(memory, 12);
+    const initial = (await memory.claimNextTopicProjection())!;
+    const id = (await memory.completeTopicProjection(initial.jobId, { topics: [{ title: '长期项目', description: '综合资料',
+      sourceEventIds: events.map(({ id }) => id), overview: events.slice(0, 6).map((event, index) => ({
+        kind: 'history' as const, title: index === 5 ? 'Zebra 海棠界面' : `事项 ${index}`, text: '资料', sourceEventIds: [event.id],
+      })) }] })).topicIds[0]!;
+    const block = memory.listBlocks()[0]!;
+    for (let index = 0; index < 14; index++) {
+      const event = await memory.addEvent({ title: `其他活动 ${index}`, summary: '比赛结果', sourceBlockId: block.id, sourceMessageIds: [] });
+      const job = (await memory.claimNextTopicProjection())!;
+      await memory.completeTopicProjection(job.jobId, { topics: [{ title: `体育 ${index}`, description: '比赛结果', sourceEventIds: [event.id], overview: [] }] });
+    }
+    await memory.addEvent({ title: 'Zebra 海棠界面', summary: '新记录', sourceBlockId: block.id, sourceMessageIds: [] });
+    const job = (await memory.claimNextTopicProjection())!;
+    expect(job.existingTopics).toHaveLength(12);
+    expect(job.existingTopics[0]!.id).toBe(id);
+    expect(job.existingTopics[0]!.sectionTitles).toContain('Zebra 海棠界面');
+  });
+
+  it('rejects globally duplicate labels outside the shortlist without accepting their unexposed evidence', async () => {
+    const memory = StrataGate.inMemory(options);
+    const [event] = await seed(memory);
+    const directory = new MemoryTopicDirectory(); const now = new Date().toISOString();
+    directory.initializeBootstrap([], now);
+    const current = memoryTopicEventFingerprint(event!);
+    const old = { id: 'hidden-chapter', title: 'ＳｔｒａｔａＧａｔｅ', description: '旧资料', sourceEventIds: [event!.id],
+      overview: [], sourceVersions: { [event!.id]: current }, dependencyVersions: { [event!.id]: current },
+      createdAt: now, updatedAt: now, projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, invalidated: false };
+    directory.restore({ ...directory.snapshot(), topics: Array.from({ length: 14 }, (_, index) => ({
+      ...old, id: `chapter-${index}`, title: index === 0 ? old.title : `其他 ${index}`,
+    })), projectedVersions: { [event!.id]: current } });
+    const sources = [event!, { ...structuredClone(event!), id: 'new-event', title: '其他', summary: '其他' }];
+    const job = directory.claim(sources, now, 'incremental')!;
+    expect(job.existingTopics.map(({ id }) => id)).not.toContain('chapter-0');
+    const result = { topics: [{ title: 'stratagate', description: '资料', sourceEventIds: ['new-event'], overview: [] }] };
+    const before = directory.snapshot();
+    expect(() => directory.complete(job.jobId, result, sources, now)).toThrow(/unexposed/);
+    expect(directory.snapshot()).toEqual(before);
+    result.topics.push({ title: '新的无关领域', description: '资料', sourceEventIds: ['new-event'], overview: [] });
+    result.topics.shift();
+    directory.complete(job.jobId, result, sources, now);
+    expect(directory.snapshot().topics).toHaveLength(15);
+  });
+
   it('rebuilds a fragmented persisted generation once and reuses a broad chapter across batches and restarts', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-chapter-rebuild-'));
     const database = join(directory, 'memory.db');
@@ -283,9 +450,11 @@ describe('rebuildable Event-backed topic directory', () => {
       id = (await memory.completeTopicProjection(batch.jobId, projection(batch, id))).topicIds[0];
     }
     await memory.forgetEvent(events[0]!.id);
+    expect(memory.hasPendingTopicWork('incremental')).toBe(false);
+    expect(await memory.claimNextTopicProjection('incremental')).toBeNull();
     let calls = 0;
     while (memory.hasPendingTopicWork() && calls < 5) {
-      const batch = (await memory.claimNextTopicProjection())!;
+      const batch = (await memory.claimNextTopicProjection('bootstrap'))!;
       expect(projection(batch).topics[0]!.topicId).toBeUndefined();
       expect((await memory.completeTopicProjection(batch.jobId, projection(batch))).topicIds).toEqual([id]);
       calls += 1;

@@ -683,6 +683,21 @@ describe('DeepSeek Harness model JSON retries', () => {
 })
 
 describe('memory topic model projection', () => {
+  it('supplies all lightweight section labels and requires exact reuse without granting hidden evidence', async () => {
+    const input = context();
+    input.existingTopics[0]!.sectionTitles = ['范围', '历史', '发布', '设计', '兼容', '界面与交互'];
+    const output = proposal();
+    output.topics[0]!.overview[1]!.title = '界面与交互';
+    const { bridge, session, calls } = modelBridge([{ tool: output }]);
+    expect(await bridge.run(session, () => bridge.topicProjector(input))).toEqual(output);
+    const request = calls.mock.calls[0]![0] as any;
+    const payload = JSON.parse(request.messages[0].content[0].text);
+    expect(payload.existingTopics[0].sectionTitles).toEqual(input.existingTopics[0]!.sectionTitles);
+    expect(payload.existingTopics[0].sourceEventIds).toEqual(['evt_topic_old']);
+    expect(request.system).toContain('必须逐字复用原 title，不要近义改名');
+    expect(request.system).toContain('这不是累计章节的段数或节数上限');
+  });
+
   it('uses broad chapter routing instructions and preserves concrete section subjects', async () => {
     const output = { topics: [{ title: 'StrataGate', description: '项目的界面与兼容性记录',
       sourceEventIds: ['evt_topic_new'],

@@ -41,7 +41,7 @@ function currentPluginVersion(): string {
 const STRATAGATE_DSH_VERSION = currentPluginVersion()
 // Invalidate cached paragraph-based views even for prerelease builds that share
 // a package version and unchanged database revision.
-const TOPIC_DIRECTORY_VIEW_VERSION = 3
+const TOPIC_DIRECTORY_VIEW_VERSION = 4
 
 function graphProjectionIsProcessing(job: {
   status: string
@@ -509,7 +509,8 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
   const frozen = state.bootstrap?.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION ? state.bootstrap : null
   // Changed, forgotten, archived or disabled-lane sources no longer belong to
   // this frozen history. Failures are never counted as successful completions.
-  const history = frozen ? Object.entries(frozen.sourceVersions)
+  const budgetedVersions = { ...(frozen?.sourceVersions ?? {}), ...state.rebuildVersions }
+  const history = frozen ? Object.entries(budgetedVersions)
     .filter(([id, version]) => versions.get(id) === version) : []
   const outstanding = new Set(history.filter(([id, version]) => state.projectedVersions[id] !== version)
     .map(([id]) => id))
@@ -519,7 +520,7 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
       || !Object.entries({ ...job.sourceVersions, ...job.dependencyVersions })
         .every(([id, version]) => versions.get(id) === version)) return []
     const ids = job.sourceEventIds.filter((id) => outstanding.has(id)
-      && frozen?.sourceVersions[id] === job.sourceVersions[id])
+      && budgetedVersions[id] === job.sourceVersions[id])
     return ids.length > 0 ? [{
       jobId: job.id, eventIds: ids, attempts: job.attempts,
       // Topic failures store reason codes, never raw model output.
@@ -529,7 +530,9 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
     }] : []
   })
   const bootstrap = frozen ? {
-    status: frozen.status,
+    status: Object.keys(state.rebuildVersions ?? {}).length > 0
+      ? (outstanding.size === new Set(failures.flatMap(({ eventIds }) => eventIds)).size ? 'completed' : 'running')
+      : frozen.status,
     total: history.length,
     completed: history.length - outstanding.size,
     failedEvents: new Set(failures.flatMap(({ eventIds }) => eventIds)).size,
@@ -630,8 +633,9 @@ async function topicEvents(runtime: StrataGateRuntime, url: URL): Promise<unknow
     else if (sectionKey.startsWith('failure:')) {
       const failure = projection.failures.find(({ jobId }) => jobId === sectionKey.slice('failure:'.length))
       if (!failure) throw new AdminHttpError(404, 'Unknown or unavailable Topic failure')
-      const pendingIds = new Set(projection.pending.map(({ id }) => id))
-      ids = failure.eventIds.filter((id) => pendingIds.has(id))
+      // A partially rebuilt chapter already indexes its unchanged members.
+      // Current failed inputs remain inspectable even outside fallback rows.
+      ids = failure.eventIds
     } else throw new AdminHttpError(404, 'Unknown or unavailable pending Topic section')
   } else {
     const topic = projection.chapters.find(({ id }) => id === topicId)

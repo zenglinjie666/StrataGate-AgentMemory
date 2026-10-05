@@ -213,6 +213,29 @@ describe('Topic Directory client interactions', () => {
     expect(buttons(tree, '1.1.0总览›')).toHaveLength(1)
   })
 
+
+  it('keeps Event book numbers and .0 paragraph order after a same-section proposal prepends a new source', async () => {
+    const client = clientRenderer(true); const directory = fixture();
+    const chapter = directory.topics[0]!;
+    chapter.overview = [{ kind: 'history', title: '界面与交互', text: '原段落', sourceEventIds: ['event-1', 'event-2'] }];
+    chapter.sourceEventIds = ['event-1', 'event-2'];
+    const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() };
+    let tree = client.render(client.TopicDirectory, props);
+    buttons(tree, '1.1界面与交互›')[0]!.props.onClick();
+    client.render(client.TopicDirectory, props); await client.flush(); tree = client.render(client.TopicDirectory, props);
+    expect(buttons(tree).filter((node) => node.props['data-topic-event-id']).map(({ text }) => text))
+      .toEqual(['1.1.1历史事件 1↗', '1.1.2历史事件 2↗']);
+    chapter.sourceEventIds.push('event-3');
+    chapter.overview.unshift({ kind: 'change', title: '界面与交互', text: '新增段落', sourceEventIds: ['event-3'] });
+    directory.revision = 'revision-2';
+    client.render(client.TopicDirectory, props); await client.flush();
+    client.render(client.TopicDirectory, props); await client.flush(); tree = client.render(client.TopicDirectory, props);
+    expect(buttons(tree).filter((node) => node.props['data-topic-event-id']).map(({ text }) => text))
+      .toEqual(['1.1.1历史事件 1↗', '1.1.2历史事件 2↗', '1.1.3历史事件 3↗']);
+    expect(find(tree, (node) => node.visible && node.props.className === 'sg-topic-overview-text').map(({ text }) => text))
+      .toEqual(['原段落', '新增段落']);
+  });
+
   it('uses stable section identity for shared-source ties even when paragraph order changes', () => {
     const topic = { sourceEventIds: ['E1'], overview: [
       { kind: 'history' as const, title: '界面与交互', text: '界面', sourceEventIds: ['E1'] },

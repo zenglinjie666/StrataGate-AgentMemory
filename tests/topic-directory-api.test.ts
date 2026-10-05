@@ -92,6 +92,53 @@ async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GE
 }
 
 describe('read-only Topic Directory admin data', () => {
+  it('keeps .0 paragraph order and .1-N Event numbers when same-section proposals prepend overlapping sources', async () => {
+    const snapshot = emptySnapshot();
+    snapshot.events = Array.from({ length: 16 }, (_, index) => event(`stable-${index}`));
+    const ids = snapshot.events.map(({ id }) => id);
+    const stored = topic('chapter', snapshot.events);
+    const a = { kind: 'history' as const, title: '界面与交互', text: '旧 A', sourceEventIds: ids.slice(0, 8) };
+    const b = { kind: 'decision' as const, title: '界面与交互', text: '旧 B', sourceEventIds: ids.slice(7, 15) };
+    stored.overview = [a, b];
+    snapshot.memoryTopicState = freeze(snapshot.events);
+    snapshot.memoryTopicState.topics = [stored];
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events);
+    const runtime = fakeRuntime(snapshot);
+    const before = (await request(runtime)).body;
+    const key = before.topics[0].sections[0].key;
+    stored.overview = [{ kind: 'change', title: a.title, text: '新 C', sourceEventIds: [ids[15]!, ids[10]!] }, b, a];
+    const original = JSON.stringify(snapshot);
+    const after = (await request(runtime)).body;
+    expect(after.topics[0].sections[0].key).toBe(key);
+    expect(after.topics[0].sections[0].paragraphs.map(({ text }: { text: string }) => text)).toEqual(['旧 A', '旧 B', '新 C']);
+    const query = `topic-events&topicId=chapter&sectionKey=${key}&expectedRevision=${after.revision}`;
+    const first = (await request(runtime, query)).body;
+    const second = (await request(runtime, query + '&offset=9')).body;
+    expect([...first.items, ...second.items].map(({ id }: { id: string }) => id)).toEqual(ids);
+    expect(first.items).toHaveLength(9);
+    expect((await request(runtime, `topic-events&topicId=chapter&sectionKey=${key}&expectedRevision=${before.revision}`)).status).toBe(409);
+    expect(JSON.stringify(snapshot)).toBe(original);
+  });
+
+  it('exposes exhausted rebuild failures for manual retry after an originally completed Bootstrap', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = [event('old')];
+    snapshot.memoryTopicState = freeze([]);
+    snapshot.memoryTopicState.rebuildVersions = versions(snapshot.events);
+    snapshot.memoryTopicState.jobs = [failedJob('rebuild-failure', snapshot.events)];
+    snapshot.memoryTopicState.topics = [topic('partially-rebuilt', snapshot.events)];
+    const runtime = fakeRuntime(snapshot);
+    const retry = vi.fn(async () => ({ jobId: 'new-rebuild', status: 'pending' as const }));
+    runtime.adminRetryTopicProjection = retry;
+    const directory = (await request(runtime)).body;
+    expect(directory.bootstrap).toMatchObject({ total: 1, completed: 0, failedEvents: 1, status: 'completed' });
+    expect(directory.bootstrap.failures[0]).toMatchObject({ jobId: 'rebuild-failure', eventCount: 1 });
+    expect(directory.pending.total).toBe(0);
+    const page = await request(runtime, `topic-events&topicId=pending&sectionKey=failure:rebuild-failure&expectedRevision=${directory.revision}`);
+    expect(page.body.items.map(({ id }: { id: string }) => id)).toEqual(['old']);
+    expect((await request(runtime, `topics/retry&jobId=rebuild-failure&expectedRevision=${directory.revision}`, 'POST')).status).toBe(200);
+    expect(retry).toHaveBeenCalledExactlyOnceWith(namespace, 'rebuild-failure');
+  });
+
   it('invalidates a prerelease paragraph-view ETag without changing the package or database version', async () => {
     const runtime = fakeRuntime(emptySnapshot())
     const current = await request(runtime, 'dashboard')

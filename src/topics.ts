@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto'
-import { bm25Rank, estimateTokens, weightedSearchTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
-
-const SECTION_TITLES: Record<string, string> = { history: '发展脉络', decision: '关键设计决策', change: '重要变化', 'open-question': '尚未解决的问题', scope: '主题范围' }
+import { bm25Rank, estimateTokens, memoryTopicSectionTitle, weightedSearchTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
 
 export function memoryTopicSectionKey(title: string): string {
   const identity = title.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -9,13 +7,13 @@ export function memoryTopicSectionKey(title: string): string {
 }
 
 /** Read-only organization: paragraphs keep their own evidence; a section owns
- * the first-seen union of their chapter-owned sources, not rewritten prose. */
+ * the chapter-member-ordered union of their sources, not rewritten prose. */
 export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
   const memberPositions = new Map<string, number>()
   topic.sourceEventIds.forEach((id, index) => { if (!memberPositions.has(id)) memberPositions.set(id, index) })
   const sections = new Map<string, { key: string; title: string; paragraphs: MemoryTopic['overview']; sourceEventIds: string[] }>()
   for (const part of topic.overview) {
-    const title = part.title?.trim() || SECTION_TITLES[part.kind] || '主题概览'
+    const title = memoryTopicSectionTitle(part)
     const identity = memoryTopicSectionKey(title)
     let section = sections.get(identity)
     if (!section) {
@@ -29,7 +27,16 @@ export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourc
   // can precede inherited prose, so its array order must not renumber the book.
   // Immutable section identity breaks shared-source ties independently of prose.
   return [...sections.values()].map((section) => ({
-    section: { ...section, sourceEventIds: [...new Set(section.sourceEventIds)] },
+    section: { ...section,
+      sourceEventIds: [...new Set(section.sourceEventIds)].sort((a, b) => memberPositions.get(a)! - memberPositions.get(b)!),
+      paragraphs: [...section.paragraphs].sort((a, b) => {
+        const first = (part: MemoryTopic['overview'][number]) => part.sourceEventIds.reduce((position, id) =>
+          Math.min(position, memberPositions.get(id) ?? Infinity), Infinity)
+        const last = (part: MemoryTopic['overview'][number]) => part.sourceEventIds.reduce((position, id) =>
+          Math.max(position, memberPositions.get(id) ?? -1), -1)
+        return first(a) - first(b) || last(a) - last(b) || JSON.stringify(a).localeCompare(JSON.stringify(b))
+      }),
+    },
     firstSourceIndex: section.sourceEventIds.reduce((first, id) => Math.min(first, memberPositions.get(id)!), Infinity),
   })).sort((a, b) => a.firstSourceIndex - b.firstSourceIndex || a.section.key.localeCompare(b.section.key))
     .map(({ section }) => section)
@@ -139,7 +146,7 @@ function lineText(value: string, maximum: number): string {
 export function renderMemoryDirectory(topics: readonly MemoryTopic[], events: readonly EventCard[]): string {
   const { entries, categories } = topicNavigation(topics, events)
   if (entries.length === 0) return ''
-  const header = '[StrataGate 记忆目录]\n仅供导航，概览不是事实证据。先 memory_expand_topic，再 memory_search_events(topic_id) 核实；也可直接搜索事件/图谱。'
+  const header = '[StrataGate 记忆目录]\n仅供导航，概览不是事实证据。需要主题脉络时用 memory_expand_topic；需要事实证据可直接 memory_search_events(topic_id)，也可直接搜索事件/图谱。'
   const lines = entries.map((entry) => `- ${entry.id}：${lineText(entry.title, 64)}${entry.description ? `；${lineText(entry.description, 48)}` : ''}`)
   const complete = `${header}\n${lines.join('\n')}`
   if (estimateTokens(complete) <= MEMORY_DIRECTORY_TOKEN_BUDGET) return complete
