@@ -8,13 +8,19 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { StrataGate } from '@diqier/stratagate'
 import { describe, expect, it } from 'vitest'
+import { dshMessageSource } from '../src/dsh-compatibility.js'
 import type { DshModelBridge } from '../src/llm.js'
 import { installRetrievalFinalization } from '../src/retrieval-finalization.js'
 import { StrataGateRuntime } from '../src/runtime.js'
 import { registerMemoryTools } from '../src/tools.js'
 
 type Call = { name: string; args: unknown }
-type Reply = { text: string } | { calls: Call[] }
+interface Reply {
+  text?: string
+  calls?: Call[]
+  reasoning?: string
+  finish?: 'stop' | 'max-tokens'
+}
 type Batch = { batchId: string; evidenceRefs: string[] }
 
 class ScriptedModel extends LlmAdapter {
@@ -25,11 +31,12 @@ class ScriptedModel extends LlmAdapter {
     const next = this.replies.shift()
     if (!next) throw new Error('Unexpected extra model step')
     const reply = next(request)
-    if ('text' in reply) yield { type: 'text-delta', index: 0, text: reply.text }
-    else for (const [index, call] of reply.calls.entries()) {
+    if (reply.reasoning !== undefined) yield { type: 'reasoning-delta', index: 0, text: reply.reasoning }
+    if (reply.text !== undefined) yield { type: 'text-delta', index: reply.reasoning === undefined ? 0 : 1, text: reply.text }
+    for (const [index, call] of (reply.calls ?? []).entries()) {
       yield { type: 'tool-call-delta', index, id: `call-${this.requests.length}-${index}` as never, name: call.name, argumentsDelta: JSON.stringify(call.args) }
     }
-    yield { type: 'finish', reason: { kind: 'stop' } }
+    yield { type: 'finish', reason: { kind: reply.finish ?? 'stop' } }
   }
 }
 
@@ -175,6 +182,124 @@ describe('retrieval finalization through the real DSH agent loop', () => {
       const lastAssistant = [...host.agent.session.snapshotEvents()].reverse().find((event) => event.type === 'assistant/message')!
       expect(lastAssistant.type === 'assistant/message' && lastAssistant.data.message.content).toEqual([{ type: 'text', text: answer }])
       expect(host.memory.listEvents().find(({ id }) => id === host.event.id)?.weight.mentionCount).toBe(2)
+    } finally { await host.close() }
+  })
+
+  const incompleteAnswers: Array<{ name: string; reply: Reply }> = [
+    { name: 'empty content', reply: {} },
+    { name: 'empty text', reply: { text: '' } },
+    { name: 'whitespace-only text', reply: { text: ' \n\t' } },
+    { name: 'reasoning-only content', reply: { reasoning: 'I should restate the database decision.' } },
+    { name: 'max-tokens with visible text', reply: { text: '本项目选择了', finish: 'max-tokens' } },
+  ]
+
+  it.each(incompleteAnswers)('retries $name and ends with a confirmed complete user answer', async ({ reply }) => {
+    const answer = '请提供当前项目配置，我会检查数据库选择是否符合要求。'
+    const host = await harness([retrieve, () => ({ text: answer }), record(false), (request) => {
+      expect(request.tools ?? []).toEqual([])
+      return reply
+    }, (request) => {
+      expect(request.tools ?? []).toEqual([])
+      expect(JSON.stringify(request.messages)).toContain('complete final user-facing answer')
+      return { text: answer }
+    }])
+    try {
+      host.agent.followup(createUserMessage({ content: [{ type: 'text', text: '检查项目数据库' }], source: { kind: 'user' } }))
+      await host.agent.whenIdle()
+      expect(host.adapter.requests).toHaveLength(5)
+      expect(host.adapter.replies).toHaveLength(0)
+      expect(host.runtime.pendingBatchIds(host.agent.session)).toEqual([])
+      const events = host.agent.session.snapshotEvents()
+      const messages = events.filter((event) => event.type === 'assistant/message')
+      const lastAssistant = messages.at(-1)!
+      expect(lastAssistant.type === 'assistant/message' && lastAssistant.data.message.content).toEqual([{ type: 'text', text: answer }])
+      const end = [...events].reverse().find((event) => event.type === 'turn/end')!
+      // DSH retains max-tokens as the overall turn diagnostic even after a later
+      // successful step. Do not rewrite the host's turn-end semantics.
+      expect(end).toMatchObject({ data: { reason: { kind: reply.finish === 'max-tokens' ? 'max-tokens' : 'completed' } } })
+      expect(messages).toHaveLength(5)
+      const invalidAssistant = messages.at(-2)!
+      expect(invalidAssistant.type === 'assistant/message' && invalidAssistant.data.step).toBe(4)
+      expect(lastAssistant.seq).toBeGreaterThan(invalidAssistant.seq)
+
+      host.adapter.replies.push((request) => {
+        expect(request.tools?.some((tool) => tool.name === 'memory_search_events')).toBe(true)
+        return { text: '下一轮正常回复。' }
+      })
+      host.agent.followup(createUserMessage({ content: [{ type: 'text', text: '谢谢' }], source: { kind: 'user' } }))
+      await host.agent.whenIdle()
+      expect(host.adapter.requests).toHaveLength(6)
+      expect(host.adapter.replies).toHaveLength(0)
+    } finally { await host.close() }
+  })
+
+  it.each(incompleteAnswers)('fails explicitly after three $name attempts without an infinite steer', async ({ reply }) => {
+    const host = await harness([retrieve, () => ({ text: '请提供项目配置。' }), record(false), ...Array.from({ length: 3 }, () => (request: GenerateOptions): Reply => {
+      expect(request.tools ?? []).toEqual([])
+      return reply
+    })])
+    try {
+      host.agent.followup(createUserMessage({ content: [{ type: 'text', text: '检查项目数据库' }], source: { kind: 'user' } }))
+      await host.agent.whenIdle()
+      expect(host.adapter.requests).toHaveLength(6)
+      expect(host.adapter.replies).toHaveLength(0)
+      expect(host.runtime.pendingBatchIds(host.agent.session)).toEqual([])
+      const end = [...host.agent.session.snapshotEvents()].reverse().find((event) => event.type === 'turn/end')!
+      expect(end).toMatchObject({ data: { reason: { kind: 'error', error: { message: expect.stringContaining('final answer recovery failed after 3 attempts') } } } })
+      host.adapter.replies.push((request) => {
+        expect(request.tools?.some((tool) => tool.name === 'memory_search_events')).toBe(true)
+        return { text: '失败后的下一轮正常回复。' }
+      })
+      host.agent.followup(createUserMessage({ content: [{ type: 'text', text: '继续' }], source: { kind: 'user' } }))
+      await host.agent.whenIdle()
+      expect(host.adapter.requests).toHaveLength(7)
+      expect(host.adapter.replies).toHaveLength(0)
+    } finally { await host.close() }
+  })
+
+  it.each([{ turn: 0, step: 4 }, { turn: 1, step: 3 }])('ignores a stale assistant message from turn $turn step $step', async (position) => {
+    const answer = '请提供项目配置，我会核对数据库方案。'
+    const host = await harness([retrieve, () => ({ text: answer }), record(false), () => ({}), (request) => {
+      expect(request.tools ?? []).toEqual([])
+      return { text: answer }
+    }])
+    host.ctx.on('session/event', (session, event) => {
+      if (event.type !== 'assistant/message' || event.data.step !== 4 || event.data.message.content.length > 0) return
+      // A stale success must not confirm the empty recovery response from step 4.
+      host.ctx.emit('session/event', session, { ...event, data: {
+        ...event.data, ...position,
+        message: { ...event.data.message, content: [{ type: 'text', text: 'An old answer.' }] },
+      } } as never)
+    })
+    try {
+      host.agent.followup(createUserMessage({ content: [{ type: 'text', text: '核对数据库' }], source: { kind: 'user' } }))
+      await host.agent.whenIdle()
+      expect(host.adapter.requests).toHaveLength(5)
+      expect(host.adapter.replies).toHaveLength(0)
+      const lastAssistant = [...host.agent.session.snapshotEvents()].reverse().find((event) => event.type === 'assistant/message')!
+      expect(lastAssistant.type === 'assistant/message' && lastAssistant.data.message.content).toEqual([{ type: 'text', text: answer }])
+    } finally { await host.close() }
+  })
+
+  it('invalidates an earlier confirmed answer if fresh steering admits a later empty step', async () => {
+    const answer = '请提供当前配置，我会检查数据库选择。'
+    const host = await harness([retrieve, () => ({ text: answer }), record(false), () => ({ text: answer }), () => ({}), (request) => {
+      expect(request.tools ?? []).toEqual([])
+      return { text: answer }
+    }])
+    let steered = false
+    host.ctx.on('agent/turn-stopping', () => {
+      if (steered || host.adapter.requests.length !== 4) return
+      steered = true
+      host.agent.steer(createUserMessage({ source: dshMessageSource('instructions'), content: [{ type: 'text', text: 'Check the requested answer format once more.' }] }))
+    })
+    try {
+      host.agent.followup(createUserMessage({ content: [{ type: 'text', text: '核对数据库' }], source: { kind: 'user' } }))
+      await host.agent.whenIdle()
+      expect(host.adapter.requests).toHaveLength(6)
+      expect(host.adapter.replies).toHaveLength(0)
+      const lastAssistant = [...host.agent.session.snapshotEvents()].reverse().find((event) => event.type === 'assistant/message')!
+      expect(lastAssistant.type === 'assistant/message' && lastAssistant.data.message.content).toEqual([{ type: 'text', text: answer }])
     } finally { await host.close() }
   })
 })

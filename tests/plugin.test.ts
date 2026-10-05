@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import LlmRuntime from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
@@ -428,7 +428,17 @@ Memory writing:
       expect(steered).toHaveLength(2)
       expect(JSON.stringify(steered[1])).toContain('complete final user-facing answer')
       await ctx.serial('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
-      expect(steered).toHaveLength(2)
+      expect(steered).toHaveLength(3) // Scheduling alone is not answer confirmation.
+      ctx.emit('session/event', session, { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 3 } } as never)
+      ctx.emit('session/event', session, {
+        type: 'assistant/message', seq: 2, time: 2, data: {
+          turn: 1, step: 3,
+          message: createAssistantMessage({ content: [{ type: 'text', text: '请提供项目配置。' }], source: { provider: 'test', model: 'test' } }),
+          stream: [{ type: 'chunk', time: 2, chunk: { type: 'finish', reason: { kind: 'stop' } } }],
+        },
+      } as never)
+      await ctx.serial('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+      expect(steered).toHaveLength(3)
     } finally {
       await ctx.fiber.dispose()
       await rm(directory, { recursive: true, force: true })
