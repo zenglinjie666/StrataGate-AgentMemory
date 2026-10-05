@@ -1,0 +1,537 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import {
+  MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, memoryTopicEventFingerprint, StrataGate,
+  type EventCard, type MemoryTopicState, type StoredMemoryTopic, type StrataGateSnapshot,
+  type TopicProjectionJob,
+} from '@diqier/stratagate'
+import { describe, expect, it, vi } from 'vitest'
+import type { ResolvedConfig } from '../src/config.js'
+import type { DshModelBridge } from '../src/llm.js'
+import { StrataGateRuntime } from '../src/runtime.js'
+import { handleAdminRequest, type WebResponse } from '../src/web.js'
+
+const namespace = 'dsh:project:topic-directory'
+const now = '2026-10-03T00:00:00.000Z'
+
+function event(id: string): EventCard {
+  return {
+    id, title: `标题 ${id}`, summary: `内容 ${id}`, tags: [], quotes: [], sourceMessageIds: [],
+    sourceBlockId: 'block-source', temporal: {}, scope: 'project', criticality: 'routine', status: 'active',
+    supersededBy: null,
+    weight: { mentionCount: 1, lastAdoptedTurn: 0, lastRetrievedAt: null, pinned: false, floorWeight: 0, forcedCap: null },
+    createdAt: now, updatedAt: now,
+  }
+}
+
+function emptySnapshot(): StrataGateSnapshot {
+  const snapshot = StrataGate.inMemory().exportSnapshot()
+  delete snapshot.memoryTopicState
+  return snapshot
+}
+
+function freeze(events: EventCard[]): MemoryTopicState {
+  const directory = new MemoryTopicDirectory()
+  directory.initializeBootstrap(events, now)
+  return directory.snapshot()
+}
+
+function versions(events: EventCard[]): Record<string, string> {
+  return Object.fromEntries(events.map((source) => [source.id, memoryTopicEventFingerprint(source)]))
+}
+
+function topic(id: string, sources: EventCard[], dependencies = sources): StoredMemoryTopic {
+  return {
+    id, title: `正式主题 ${id}`, description: `主题说明 ${id}`,
+    sourceEventIds: sources.map(({ id }) => id),
+    overview: [{ kind: 'history', text: `总览 ${id}`, sourceEventIds: sources.map(({ id }) => id) }],
+    createdAt: now, updatedAt: now, sourceVersions: versions(sources), dependencyVersions: versions(dependencies),
+    projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, invalidated: false,
+  }
+}
+
+function failedJob(id: string, sources: EventCard[], overrides: Partial<TopicProjectionJob> = {}): TopicProjectionJob {
+  return {
+    id, sourceEventIds: sources.map(({ id }) => id), sourceVersions: versions(sources),
+    dependencyVersions: versions(sources), candidateVersions: {}, context: null,
+    projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, status: 'failed', attempts: 3,
+    topicIds: [], lastError: 'worker-failed', nextRetryAt: null, createdAt: now, updatedAt: now,
+    ...overrides,
+  }
+}
+
+function fakeRuntime(snapshot: StrataGateSnapshot, weight: () => number = () => 1): StrataGateRuntime {
+  return {
+    adminSnapshot: async (key: string) => key === namespace ? snapshot : null,
+    adminNamespaces: async () => [namespace],
+    adminSnapshotEntries: async () => [{ namespace, revision: 5, snapshot }],
+    adminAgentMemoryRetrievalWeight: weight,
+    adminWorkspaceName: () => '测试工作区',
+    adminDataDirectory: () => 'C:\\memory',
+  } as unknown as StrataGateRuntime
+}
+
+async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GET', headers?: Record<string, string>) {
+  const [route, ...parameters] = path.split('&')
+  let text = ''
+  const outputHeaders: Record<string, string> = {}
+  const response: WebResponse = {
+    statusCode: 0,
+    setHeader: (name, value) => { outputHeaders[name] = value },
+    end: (body) => { text = body },
+  }
+  await handleAdminRequest(runtime, {
+    method, url: `/api/stratagate/${route}?namespace=${encodeURIComponent(namespace)}${parameters.map((value) => `&${value}`).join('')}`,
+    ...(headers ? { headers } : {}),
+  }, response)
+  return { status: response.statusCode, body: text ? JSON.parse(text) : null, headers: outputHeaders }
+}
+
+describe('read-only Topic Directory admin data', () => {
+  it('exposes every chapter with counts while loading Event references in bounded pages', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: 60 }, (_, index) => event(`event-${String(index).padStart(3, '0')}`))
+    const state = freeze(snapshot.events)
+    state.topics = [topic('topic-b', snapshot.events.slice(30, 50)), topic('topic-a', snapshot.events.slice(0, 30))]
+    state.projectedVersions = versions(snapshot.events.slice(0, 50))
+    snapshot.memoryTopicState = state
+    const before = JSON.stringify(snapshot)
+    const result = await request(fakeRuntime(snapshot), 'dashboard')
+    expect(result.status).toBe(200)
+    expect(result.body.data.events).toHaveLength(40)
+    const directory = result.body.data.topicDirectory
+    expect(directory.navigationOnly).toBe(true)
+    expect(directory.topics.filter((item: { isFallback?: boolean }) => !item.isFallback)
+      .map((item: { id: string }) => item.id)).toEqual(['topic-a', 'topic-b'])
+    expect(directory.topics).toHaveLength(2)
+    expect(directory.topics.find((item: { id: string }) => item.id === 'topic-b').overview[0].sourceEventCount).toBe(20)
+    expect(JSON.stringify(directory)).not.toContain('"sourceEventIds"')
+    expect(JSON.stringify(directory)).not.toContain('"eventIds"')
+    expect(directory).not.toHaveProperty('events')
+    expect(directory.pending).toEqual({ total: 10 })
+    expect(directory.revision).toMatch(/^[a-f0-9]{64}$/)
+    expect(directory.context).toContain('StrataGate 记忆目录')
+    expect(directory).not.toHaveProperty('batchId')
+    expect(directory).not.toHaveProperty('evidenceRefs')
+    expect(JSON.stringify(snapshot)).toBe(before)
+    const separate = await request(fakeRuntime(snapshot))
+    expect(separate.body).toEqual({ namespace, ...directory })
+    const page = await request(fakeRuntime(snapshot), 'topic-events&topicId=topic-b&sectionKey=history:0')
+    expect(page.body).toMatchObject({
+      revision: directory.revision, total: 20, offset: 0, limit: 9, nextOffset: 9,
+    })
+    expect(page.body.items).toHaveLength(9)
+    expect(page.body.items[0]).toMatchObject({ id: 'event-030', title: '标题 event-030' })
+    expect(page.body.items[0]).not.toHaveProperty('summary')
+    const pending = await request(fakeRuntime(snapshot), 'topic-events&topicId=pending&offset=9')
+    expect(pending.body).toMatchObject({ total: 10, nextOffset: null, items: [{ id: 'event-059', title: '标题 event-059' }] })
+  })
+
+  it.each([2_000, 10_000])('does not duplicate %i Event titles or summaries into the collapsed directory', async (count) => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: count }, (_, index) => ({
+      ...event(`event-${String(index).padStart(5, '0')}`),
+      title: `private-event-title-${index}`,
+      summary: `private-event-summary-${index} ${'长期记忆正文'.repeat(40)}`,
+    }))
+    const runtime = fakeRuntime(snapshot)
+    const result = await request(runtime, 'dashboard')
+    expect(result.status).toBe(200)
+    const directory = result.body.data.topicDirectory
+    expect(directory).not.toHaveProperty('events')
+    expect(directory.topics).toEqual([])
+    expect(directory.pending).toEqual({ total: count })
+    // Existing timeline remains a bounded page. Topic navigation may only
+    // expose a bounded directory-context sample, never the full Event payload.
+    expect(result.body.data.events).toHaveLength(40)
+    expect(JSON.stringify(directory)).not.toContain('private-event-summary-')
+    expect(JSON.stringify(result.body)).not.toContain(`private-event-title-${count - 1}`)
+    expect(JSON.stringify(result.body)).not.toContain(`private-event-summary-${count - 1}`)
+    expect(JSON.stringify(directory).length).toBeLessThan(4_000)
+    const page = await request(runtime, 'topic-events&topicId=pending&limit=10000000000000000000000000000000')
+    expect(page.body).toMatchObject({ total: count, limit: 9, offset: 0, nextOffset: 9 })
+    expect(page.body.items).toHaveLength(9)
+    for (const item of page.body.items) expect(Object.keys(item)).toEqual(['id', 'title', 'status', 'createdAt'])
+  }, 30_000)
+
+  it.each([2_000, 10_000])('keeps a formal Topic with %i members count-only while retaining server-side pagination', async (count) => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: count }, (_, index) => event(`member-${String(index).padStart(5, '0')}`))
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    const chapter = topic('large-topic', snapshot.events)
+    chapter.overview[0]!.sourceEventIds = snapshot.events.slice(0, 12).map(({ id }) => id)
+    snapshot.memoryTopicState.topics = [chapter]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    const runtime = fakeRuntime(snapshot)
+    const before = JSON.stringify(snapshot)
+    const result = await request(runtime, 'dashboard')
+    const directory = result.body.data.topicDirectory
+    expect(directory.topics).toHaveLength(1)
+    expect(directory.topics[0].coverage).toEqual({ totalEvents: count, summarizedEvents: 12, omittedEvents: count - 12 })
+    expect(directory.topics[0].overview[0].sourceEventCount).toBe(12)
+    expect(directory.pending.total).toBe(0)
+    const serialized = JSON.stringify(directory)
+    expect(serialized).not.toContain('"sourceEventIds"')
+    expect(serialized).not.toContain('"eventIds"')
+    expect(serialized).not.toContain('member-00000')
+    expect(serialized).not.toContain(`member-${String(count - 1).padStart(5, '0')}`)
+    expect(serialized.length).toBeLessThan(4_000)
+    expect((await request(runtime)).body).toEqual({ namespace, ...directory })
+    const page = await request(runtime, `topic-events&topicId=large-topic&sectionKey=uncovered&expectedRevision=${directory.revision}`)
+    expect(page.body).toMatchObject({ total: count - 12, limit: 9, offset: 0, nextOffset: 9 })
+    expect(page.body.items.map((item: { id: string }) => item.id)).toEqual(snapshot.events.slice(12, 21).map(({ id }) => id))
+    const tail = await request(runtime, `topic-events&topicId=large-topic&offset=${count - 1}&expectedRevision=${directory.revision}`)
+    expect(tail.body).toMatchObject({ total: count, nextOffset: null, items: [{ id: snapshot.events[count - 1]!.id }] })
+    expect(JSON.stringify(snapshot)).toBe(before)
+  }, 30_000)
+
+  it('does not expose Event ID arrays even in oversized overview and failure records', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: 2_000 }, (_, index) => event(`private-member-${index}`))
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.topics = [topic('large-overview', snapshot.events)]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    const overviewDirectory = (await request(fakeRuntime(snapshot))).body
+    expect(overviewDirectory.topics[0].overview[0].sourceEventCount).toBe(2_000)
+    expect(JSON.stringify(overviewDirectory)).not.toContain('"sourceEventIds"')
+    expect(JSON.stringify(overviewDirectory).length).toBeLessThan(4_000)
+
+    snapshot.memoryTopicState.topics = []
+    snapshot.memoryTopicState.projectedVersions = {}
+    snapshot.memoryTopicState.jobs = [failedJob('large-failure', snapshot.events)]
+    const runtime = fakeRuntime(snapshot)
+    const failureDirectory = (await request(runtime)).body
+    expect(failureDirectory.bootstrap.failures[0].eventCount).toBe(2_000)
+    expect(JSON.stringify(failureDirectory)).not.toContain('"eventIds"')
+    expect(JSON.stringify(failureDirectory).length).toBeLessThan(4_000)
+    const page = await request(runtime, `topic-events&topicId=pending&sectionKey=failure:large-failure&expectedRevision=${failureDirectory.revision}`)
+    expect(page.body).toMatchObject({ total: 2_000, limit: 9, nextOffset: 9 })
+    expect(page.body.items).toHaveLength(9)
+  }, 30_000)
+
+  it('changes revision on same-count membership reorder without exposing the member IDs', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('member-a'), event('member-b')]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.topics = [topic('chapter', snapshot.events)]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    const runtime = fakeRuntime(snapshot)
+    const first = (await request(runtime)).body
+    snapshot.memoryTopicState.topics[0]!.sourceEventIds.reverse()
+    const second = (await request(runtime)).body
+    expect(second.topics).toEqual(first.topics)
+    expect(second.revision).not.toBe(first.revision)
+    expect((await request(runtime, `topic-events&topicId=chapter&expectedRevision=${first.revision}`)).status).toBe(409)
+    expect((await request(runtime, `topic-events&topicId=chapter&expectedRevision=${second.revision}`)).body.items.map((item: { id: string }) => item.id)).toEqual(['member-b', 'member-a'])
+  })
+
+  it('retains source order for sections, uncovered members and duplicate-kind occurrences', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: 15 }, (_, index) => event(`event-${index}`))
+    const sources = [snapshot.events[9]!, snapshot.events[1]!, snapshot.events[13]!, ...snapshot.events.filter((_event, index) => ![9, 1, 13].includes(index))]
+    const stored = topic('chapter', sources)
+    stored.overview = [
+      { kind: 'history', text: '第一段脉络', sourceEventIds: sources.slice(0, 8).map(({ id }) => id) },
+      { kind: 'history', text: '第二段脉络', sourceEventIds: [sources[8]!.id] },
+    ]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.topics = [stored]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    const runtime = fakeRuntime(snapshot)
+    const members = await request(runtime, 'topic-events&topicId=chapter')
+    expect(members.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(0, 9).map(({ id }) => id))
+    const first = await request(runtime, 'topic-events&topicId=chapter&sectionKey=history:0')
+    expect(first.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(0, 8).map(({ id }) => id))
+    expect(first.body.nextOffset).toBeNull()
+    const second = await request(runtime, 'topic-events&topicId=chapter&sectionKey=history:1')
+    expect(second.body.items.map((item: { id: string }) => item.id)).toEqual([sources[8]!.id])
+    const uncovered = await request(runtime, 'topic-events&topicId=chapter&sectionKey=uncovered')
+    expect(uncovered.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(9).map(({ id }) => id))
+    const later = await request(runtime, 'topic-events&topicId=chapter&offset=9')
+    expect(later.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(9).map(({ id }) => id))
+    expect(later.body.nextOffset).toBeNull()
+    expect((await request(runtime, 'topic-events&topicId=chapter&sectionKey=history:2')).status).toBe(404)
+  })
+
+  it('keeps pending ordering predictable by creation time and ID', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [
+      { ...event('event-late'), createdAt: '2026-10-04T00:00:00.000Z' },
+      event('event-b'), event('event-a'),
+    ]
+    const result = await request(fakeRuntime(snapshot), 'topic-events&topicId=pending')
+    expect(result.body.items.map((item: { id: string }) => item.id)).toEqual(['event-a', 'event-b', 'event-late'])
+  })
+
+  it('changes the directory revision when a Bootstrap failure scope disappears without changing Events', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('pending')]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.jobs = [failedJob('failed-job', snapshot.events)]
+    const runtime = fakeRuntime(snapshot)
+    const first = await request(runtime)
+    expect(first.body.bootstrap.failures).toHaveLength(1)
+    const visibleBefore = JSON.stringify({ topics: first.body.topics, pending: first.body.pending, events: snapshot.events })
+    const page = await request(runtime, `topic-events&topicId=pending&sectionKey=failure:failed-job&expectedRevision=${first.body.revision}`)
+    expect(page.status).toBe(200)
+
+    snapshot.memoryTopicState.jobs = []
+    const second = await request(runtime, 'dashboard')
+    const current = second.body.data.topicDirectory
+    expect(current.bootstrap.failures).toEqual([])
+    expect(JSON.stringify({ topics: current.topics, pending: current.pending, events: snapshot.events })).toBe(visibleBefore)
+    expect(current.revision).not.toBe(first.body.revision)
+    const stalePage = await request(runtime, `topic-events&topicId=pending&sectionKey=failure:failed-job&expectedRevision=${first.body.revision}`)
+    expect(stalePage.status).toBe(409)
+    expect(stalePage.body).toMatchObject({ code: 'directory-changed', revision: current.revision })
+    expect(stalePage.body).not.toHaveProperty('items')
+    const currentScope = await request(runtime, `topic-events&topicId=pending&sectionKey=failure:failed-job&expectedRevision=${current.revision}`)
+    expect(currentScope.status).toBe(404)
+    const pendingPage = await request(runtime, `topic-events&topicId=pending&expectedRevision=${current.revision}`)
+    expect(pendingPage.body).toMatchObject({ revision: current.revision, total: 1, items: [{ id: 'pending' }] })
+  })
+
+  it('pages only the visible fallback sources of an existing terminal Bootstrap failure', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: 20 }, (_, index) => event(`event-${index}`))
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events.slice(0, 8))
+    snapshot.memoryTopicState.topics = [topic('done', snapshot.events.slice(0, 8))]
+    const failed = snapshot.events.slice(8)
+    snapshot.memoryTopicState.jobs = [failedJob('failed-job', failed)]
+    const runtime = fakeRuntime(snapshot)
+    const first = await request(runtime, 'topic-events&topicId=pending&sectionKey=failure:failed-job')
+    expect(first.body).toMatchObject({ topicId: 'pending', sectionKey: 'failure:failed-job', total: 12, nextOffset: 9 })
+    expect(first.body.items.map((item: { id: string }) => item.id)).toEqual(failed.slice(0, 9).map(({ id }) => id))
+    const second = await request(runtime, 'topic-events&topicId=pending&sectionKey=failure:failed-job&offset=9')
+    expect(second.body.items.map((item: { id: string }) => item.id)).toEqual(failed.slice(9).map(({ id }) => id))
+    expect((await request(runtime, 'topic-events&topicId=pending&sectionKey=failure:unknown')).status).toBe(404)
+    snapshot.events[8]!.status = 'forgotten'
+    expect((await request(runtime, 'topic-events&topicId=pending&sectionKey=failure:failed-job')).status).toBe(404)
+  })
+
+  it('rejects stale directory pages after source or lane changes without writing state', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('conversation')]
+    snapshot.agentEvents = [event('agent')]
+    let weight = 1
+    const runtime = fakeRuntime(snapshot, () => weight)
+    const first = await request(runtime)
+    const accepted = await request(runtime, `topic-events&topicId=pending&expectedRevision=${first.body.revision}`)
+    expect(accepted.body.revision).toBe(first.body.revision)
+    weight = 0
+    const before = JSON.stringify(snapshot)
+    const disabled = await request(runtime, `topic-events&topicId=pending&expectedRevision=${first.body.revision}`)
+    expect(disabled.status).toBe(409)
+    expect(disabled.body).toMatchObject({ code: 'directory-changed' })
+    expect(disabled.body).not.toHaveProperty('items')
+    const current = await request(runtime)
+    expect(disabled.body.revision).toBe(current.body.revision)
+    snapshot.events[0]!.title = '更新后的标题'
+    const changed = await request(runtime, `topic-events&topicId=pending&expectedRevision=${current.body.revision}`)
+    expect(changed.status).toBe(409)
+    snapshot.events[0]!.title = '标题 conversation'
+    expect(JSON.stringify(snapshot)).toBe(before)
+  })
+
+  it('binds pages to the requested namespace and rejects unknown or unbounded parameters', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('kept')]
+    const runtime = fakeRuntime(snapshot)
+    for (const parameters of [
+      'topicId=pending&eventIds=kept', 'topicId=pending&limit=-1', 'topicId=pending&limit=Infinity',
+      'topicId=pending&limit=1.5', 'topicId=pending&offset=-1', 'topicId=pending&offset=1.5',
+      'topicId=pending&offset=9007199254740992', 'topicId=pending&limit=9&limit=9',
+      'topicId=pending&expectedRevision=old', 'topicId=pending&namespace=other',
+    ]) expect((await request(runtime, `topic-events&${parameters}`)).status).toBe(400)
+    expect((await request(runtime, 'topic-events')).status).toBe(400)
+    expect((await request(runtime, 'topic-events&topicId=unknown')).status).toBe(404)
+    expect((await request(runtime, 'topic-events&topicId=fallback:kept')).status).toBe(404)
+    expect((await request(runtime, 'topic-events&topicId=pending&sectionKey=uncovered')).status).toBe(404)
+    expect((await request(runtime, 'topic-events&topicId=pending&offset=9007199254740991')).body).toMatchObject({ items: [], nextOffset: null })
+    expect((await request(runtime, 'topic-events&topicId=pending&limit=0')).body.limit).toBe(1)
+    expect((await request(runtime, 'topic-events&topicId=pending', 'POST')).status).toBe(405)
+    let body = ''
+    const response: WebResponse = { statusCode: 0, setHeader: () => {}, end: (value) => { body = value } }
+    await handleAdminRequest(runtime, { method: 'GET', url: '/api/stratagate/topic-events?namespace=dsh%3Aproject%3Aother&topicId=pending' }, response)
+    expect(response.statusCode).toBe(404)
+    expect(JSON.parse(body)).not.toHaveProperty('items')
+  })
+
+  it('removes all cached language when a cited or uncited dependency changes', async () => {
+    const snapshot = emptySnapshot()
+    const cited = event('visible-source')
+    const background = event('uncited-source')
+    snapshot.events = [cited, background]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.topics = [topic('topic-sensitive', [cited], snapshot.events)]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    background.summary = '更新后的来源内容'
+    const before = JSON.stringify(snapshot)
+    const result = await request(fakeRuntime(snapshot))
+    const serialized = JSON.stringify(result.body)
+    expect(serialized).not.toContain('正式主题 topic-sensitive')
+    expect(serialized).not.toContain('总览 topic-sensitive')
+    expect(result.body.topics).toEqual([])
+    expect(result.body.pending).toEqual({ total: 2 })
+    expect((await request(fakeRuntime(snapshot), 'topic-events&topicId=topic-sensitive&sectionKey=history:0')).status).toBe(404)
+    expect(JSON.stringify(snapshot)).toBe(before)
+  })
+
+  it('hides forgotten/archived sources and preserves safe fallback entries', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('kept'), { ...event('forgotten'), status: 'forgotten' }, { ...event('archived'), status: 'archived' }]
+    const result = await request(fakeRuntime(snapshot))
+    expect(result.body.topics).toEqual([])
+    expect(result.body.pending).toEqual({ total: 1 })
+    expect(result.body).not.toHaveProperty('events')
+    expect((await request(fakeRuntime(snapshot), 'topic-events&topicId=pending')).body.items)
+      .toEqual([expect.objectContaining({ id: 'kept' })])
+    expect(result.body.bootstrap).toBeNull()
+  })
+
+  it('applies the agent lane control to mixed dependencies, fallback, detail and dashboard caching', async () => {
+    const snapshot = emptySnapshot()
+    const conversation = event('conversation')
+    const agent = event('agent-only')
+    snapshot.events = [conversation]
+    snapshot.agentEvents = [agent]
+    snapshot.memoryTopicState = freeze([conversation, agent])
+    snapshot.memoryTopicState.topics = [topic('mixed', [conversation], [conversation, agent])]
+    snapshot.memoryTopicState.projectedVersions = versions([conversation, agent])
+    let weight = 1
+    const runtime = fakeRuntime(snapshot, () => weight)
+    const first = await request(runtime, 'dashboard')
+    const detail = await request(runtime, 'sources&eventId=agent-only')
+    expect(detail.status).toBe(200)
+    weight = 0
+    const second = await request(runtime, 'dashboard', 'GET', { 'if-none-match': first.headers.ETag! })
+    expect(second.status).toBe(200)
+    expect(second.headers.ETag).not.toBe(first.headers.ETag)
+    const directory = second.body.data.topicDirectory
+    expect(directory.topics).toEqual([])
+    expect(directory.pending).toEqual({ total: 1 })
+    expect((await request(runtime, 'topic-events&topicId=pending')).body.items.map((item: { id: string }) => item.id)).toEqual(['conversation'])
+    expect((await request(runtime, 'topic-events&topicId=mixed')).status).toBe(404)
+    expect(JSON.stringify(directory)).not.toContain('agent-only')
+    expect(JSON.stringify(directory)).not.toContain('正式主题 mixed')
+    expect((await request(runtime, 'sources&eventId=agent-only')).status).toBe(404)
+    weight = 1
+    agent.status = 'forgotten'
+    expect((await request(runtime, 'sources&eventId=agent-only')).status).toBe(404)
+  })
+
+  it.each(['pending', 'running'] as const)('shows %s Bootstrap progress with only successful completions', async (status) => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('complete'), event('pending')]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.bootstrap!.status = status
+    snapshot.memoryTopicState.projectedVersions = versions([snapshot.events[0]!])
+    const result = await request(fakeRuntime(snapshot), 'dashboard')
+    expect(result.body.processing).toBe(true)
+    expect(result.body.data.topicDirectory.bootstrap).toMatchObject({ status, total: 2, completed: 1, failedEvents: 0, failures: [] })
+  })
+
+  it('keeps terminal failures visible without exposing model inputs or raw error text', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('complete'), event('failed')]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.projectedVersions = versions([snapshot.events[0]!])
+    snapshot.memoryTopicState.jobs = [failedJob('failed-job', [snapshot.events[1]!], {
+      lastError: 'RAW SECRET MODEL RESPONSE',
+      context: { jobId: 'failed-job', events: snapshot.events, existingTopics: [] },
+    })]
+    const result = await request(fakeRuntime(snapshot))
+    expect(result.body.bootstrap).toMatchObject({
+      status: 'completed', total: 2, completed: 1, failedEvents: 1,
+      failures: [{ jobId: 'failed-job', eventCount: 1, attempts: 3, lastError: 'worker-failed' }],
+    })
+    expect(JSON.stringify(result.body)).not.toContain('RAW SECRET MODEL RESPONSE')
+    expect(result.body.bootstrap.failures[0]).not.toHaveProperty('context')
+  })
+
+  it('does not count changed, forgotten, superseded or retryable inputs as historical failures', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('complete'), event('changed'), event('forgotten'), event('retrying')]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.projectedVersions = versions([snapshot.events[0]!])
+    snapshot.memoryTopicState.jobs = [
+      failedJob('changed-job', [snapshot.events[1]!]),
+      failedJob('forgotten-job', [snapshot.events[2]!]),
+      failedJob('retrying-job', [snapshot.events[3]!], { attempts: 1, nextRetryAt: '2026-10-04T00:00:00.000Z' }),
+      failedJob('superseded-job', [snapshot.events[3]!], { superseded: true }),
+    ]
+    snapshot.events[1]!.summary = '来源已更新'
+    snapshot.events[2]!.status = 'forgotten'
+    const result = await request(fakeRuntime(snapshot))
+    expect(result.body.bootstrap).toMatchObject({ status: 'pending', total: 2, completed: 1, failedEvents: 0, failures: [] })
+  })
+
+  it('returns a completed empty Bootstrap without an active-processing signal', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.memoryTopicState = freeze([])
+    const result = await request(fakeRuntime(snapshot), 'dashboard')
+    expect(result.body.processing).toBe(false)
+    expect(result.body.data.topicDirectory).toMatchObject({
+      context: '', topics: [], pending: { total: 0 }, bootstrap: { status: 'completed', total: 0, completed: 0, failedEvents: 0 },
+    })
+  })
+
+  it('requires a namespace and rejects writes to the new navigation endpoint', async () => {
+    const runtime = fakeRuntime(emptySnapshot())
+    expect((await request(runtime, 'topics', 'POST')).status).toBe(405)
+    let result = ''
+    const response: WebResponse = { statusCode: 0, setHeader: () => {}, end: (body) => { result = body } }
+    await handleAdminRequest(runtime, { method: 'GET', url: '/api/stratagate/topics' }, response)
+    expect(response.statusCode).toBe(400)
+    expect(JSON.parse(result).error).toBe('namespace is required')
+  })
+
+  it('browses a legacy database without creating Topic state, writing receipts or calling a model', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-directory-readonly-'))
+    const database = join(directory, 'memory.db')
+    const memory = await StrataGate.open({ database, namespace, blockTurnSize: 1 })
+    await memory.appendTurn({ user: '可追溯的原始消息', assistant: '已保存' }, { deferDerivation: true })
+    const block = memory.listBlocks()[0]!
+    await memory.addEvent({ id: 'legacy-event', title: '旧记忆', summary: '仍可正常查看', sourceBlockId: block.id, sourceMessageIds: [block.l5Raw[0]!.id] })
+    await memory.close()
+    const legacy = new DatabaseSync(database)
+    legacy.exec('DROP TABLE memory_topic_state')
+    legacy.close()
+    const beforeBytes = await readFile(database)
+    const modelCall = vi.fn(() => { throw new Error('Browsing must not call a model') })
+    const runtime = new StrataGateRuntime({
+      database, namespaceMode: 'project', namespacePrefix: 'dsh', globalNamespace: 'global',
+      blockTurnSize: 1, blockDecayLambda: 0.3, ingestSubagents: false, maxOutputTokens: 2048,
+    } satisfies ResolvedConfig, {
+      onAdaptersUpdated: () => () => {}, isReady: () => false, topicProjector: modelCall,
+    } as unknown as DshModelBridge)
+    try {
+      const before = await runtime.adminSnapshot(namespace)
+      for (const path of ['topics', 'dashboard', 'topic-events&topicId=pending', 'sources&eventId=legacy-event']) {
+        const result = await request(runtime, path)
+        expect(result.status).toBe(200)
+        if (path === 'topics') expect(result.body).toMatchObject({
+          topics: [], pending: { total: 1 }, bootstrap: null,
+        })
+      }
+      expect(await runtime.adminSnapshot(namespace)).toEqual(before)
+      expect(modelCall).not.toHaveBeenCalled()
+      const internals = runtime as unknown as { spaces: Map<string, unknown>; batches: Map<string, unknown>; latestBatchIds: Map<string, unknown> }
+      expect(internals.spaces.size).toBe(0)
+      expect(internals.batches.size).toBe(0)
+      expect(internals.latestBatchIds.size).toBe(0)
+      expect((await readFile(database)).equals(beforeBytes)).toBe(true)
+      const reader = new DatabaseSync(database, { readOnly: true })
+      try {
+        expect(reader.prepare("SELECT name FROM sqlite_master WHERE name IN ('memory_topic_state', 'stratagate_dsh_workspaces', 'stratagate_dsh_settings', 'stratagate_dsh_feedback_drafts')").all()).toEqual([])
+      }
+      finally { reader.close() }
+    } finally {
+      await runtime.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+})

@@ -261,6 +261,20 @@ window.__ModuleLoader__.load({
       @media(max-width:560px){.sg-citation-dialog-head{align-items:flex-start}.sg-citation-dialog-actions{gap:2px}.sg-citation-status{font-size:10px}.sg-info-popover{position:fixed;left:12px;right:12px;top:auto;bottom:16px;width:auto}.sg-event-technical{grid-template-columns:1fr}.sg-weight-chart svg{min-height:170px!important}}
     `
 
+    const topicDirectoryCss = `
+      .sg-topic-directory{max-width:940px;padding:3px 2px 16px}.sg-topic-directory-intro{padding:0 0 18px;border-bottom:1px solid var(--sg-border)}.sg-topic-directory-intro h2{margin:0 0 5px;font-size:13px;font-weight:700}.sg-topic-directory-intro p{margin:0;color:var(--sg-muted);font-size:12px;line-height:1.6}.sg-topic-context{margin-top:6px;color:var(--sg-muted);font-size:11px}.sg-topic-context summary{width:max-content;cursor:pointer}.sg-topic-context pre{margin:7px 0 0;padding-left:12px;border-left:2px solid var(--sg-border);font:inherit;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+      .sg-topic-chapter{padding:22px 0 20px;border-bottom:1px solid var(--sg-border)}.sg-topic-chapter-header{display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px}.sg-topic-chapter-number{padding-top:2px;color:color-mix(in srgb,var(--sg-muted) 75%,var(--sg-page));font-size:27px;font-weight:450;line-height:1.35;font-variant-numeric:tabular-nums}.sg-topic-chapter-copy{min-width:0}.sg-topic-chapter-copy h2{margin:0;font-size:17px;font-weight:720;line-height:1.5}.sg-topic-chapter-toggle,.sg-topic-section-toggle,.sg-topic-overview-toggle{display:flex;align-items:baseline;gap:10px;width:100%;min-width:0;padding:0;border:0;background:transparent;text-align:left;cursor:pointer}.sg-topic-chapter-label{flex:0 0 auto;color:var(--sg-muted);font-size:12px;font-weight:560}.sg-topic-chapter-title{min-width:0;overflow-wrap:anywhere;text-wrap:pretty}.sg-directory-chevron{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 auto;margin-left:auto;color:var(--sg-muted);font-size:18px;line-height:1;transform-origin:center;transition:transform var(--sg-medium) var(--sg-ease)}[aria-expanded="true"]>.sg-directory-chevron{transform:rotate(90deg)}.sg-topic-description{max-width:72ch;margin:4px 0 0;color:var(--sg-muted);font-size:12px;line-height:1.65;overflow-wrap:anywhere}.sg-topic-sections{padding:12px 0 0 52px}.sg-topic-section{margin:0}.sg-topic-section-heading{margin:0;font-size:13px;font-weight:620}.sg-topic-section-toggle{align-items:center;min-height:36px;padding:7px 8px;border-radius:5px}.sg-topic-section-toggle:hover,.sg-topic-overview-toggle:hover,.sg-topic-event:hover{background:var(--sg-soft)}.sg-directory-number{flex:0 0 auto;min-width:3.3em;color:var(--sg-muted);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}.sg-topic-section-body{margin:2px 0 8px 17px;padding:0 0 2px 16px;border-left:1px solid var(--sg-border)}.sg-topic-overview{margin-bottom:3px}.sg-topic-overview-heading{margin:0;font-size:12px;font-weight:620}.sg-topic-overview-toggle{align-items:center;min-height:33px;padding:6px 8px;border-radius:5px}.sg-topic-overview-text{max-width:72ch;margin:1px 0 10px;padding:0 8px 0 calc(3.3em + 18px);color:var(--sg-muted);font-size:13px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}
+      .sg-topic-event{display:flex;align-items:center;gap:10px;width:100%;min-width:0;min-height:33px;padding:6px 8px;border:0;border-radius:5px;background:transparent;text-align:left;cursor:pointer}.sg-topic-event-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.sg-topic-event-arrow{flex:0 0 auto;color:var(--sg-muted);font-size:12px;opacity:0;transition:opacity var(--sg-fast) var(--sg-ease)}.sg-topic-event:hover .sg-topic-event-arrow,.sg-topic-event:focus-visible .sg-topic-event-arrow{opacity:1}.sg-topic-show-all{display:block;margin:5px 0 3px;padding:5px 8px;border:0;border-radius:5px;background:transparent;color:var(--sg-accent)!important;font-size:11px!important;cursor:pointer}.sg-topic-show-all:hover{background:var(--sg-soft)}.sg-topic-other-events{margin:7px 8px 0;color:var(--sg-muted);font-size:12px}.sg-topic-other-events>summary{padding:5px 0;cursor:pointer}.sg-topic-no-overview{margin:4px 8px;color:var(--sg-muted);font-size:12px}
+      .sg-directory-fold{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows var(--sg-medium) var(--sg-ease),opacity var(--sg-medium) var(--sg-ease),visibility 0s var(--sg-medium)}.sg-directory-fold.open{grid-template-rows:1fr;opacity:1;visibility:visible;transition-delay:0s}.sg-directory-fold-inner{min-height:0;overflow:hidden}.sg-directory-fold:not(.open){pointer-events:none}.sg-topic-bootstrap{margin:14px 0 1px;padding:9px 0 9px 12px;border-left:2px solid var(--sg-accent);transition:border-color var(--sg-medium) var(--sg-ease),background-color var(--sg-medium) var(--sg-ease)}.sg-topic-bootstrap.attention{border-color:var(--sg-warn)}.sg-topic-bootstrap-line{display:flex;align-items:center;gap:8px;min-width:0;font-size:12px;font-variant-numeric:tabular-nums}.sg-topic-bootstrap-line>span:nth-child(2){flex:1}.sg-topic-warning{color:var(--sg-warn)}.sg-topic-bootstrap-copy{margin:3px 0 0 22px;color:var(--sg-muted);font-size:11px;line-height:1.6}.sg-topic-status-details{flex:0 0 auto;padding:2px 4px;border:0;border-radius:4px;background:transparent;color:var(--sg-accent)!important;font-size:11px!important;cursor:pointer}.sg-topic-status-details:hover{background:var(--sg-soft)}.sg-topic-failures{padding:9px 0 0 22px;color:var(--sg-muted);font-size:12px}.sg-topic-failure{padding:7px 0;border-top:1px solid var(--sg-border)}.sg-topic-failure>p{margin:0 0 3px}.sg-topic-failure-technical{margin:4px 8px;font-size:11px}.sg-topic-failure-technical summary{cursor:pointer}.sg-topic-failure-technical p{white-space:pre-wrap;overflow-wrap:anywhere}
+      .sg-topic-pending{padding:20px 0 0}.sg-topic-pending-heading{display:flex;align-items:baseline;gap:10px}.sg-topic-pending-heading h2{margin:0;font-size:13px;font-weight:650}.sg-topic-pending-heading span{color:var(--sg-muted);font-size:11px}.sg-topic-pending>p{margin:4px 0 8px;color:var(--sg-muted);font-size:12px}.sg-topic-pending-mark{width:12px;color:var(--sg-muted);text-align:center}.sg-topic-empty{padding:27px 0;color:var(--sg-muted);font-size:13px}.sg-topic-empty h3{margin:0 0 4px;color:var(--sg-text);font-size:14px;font-weight:650}.sg-topic-empty p{margin:0}.sg-long-tabs{max-width:100%;flex-wrap:wrap}.sg-long-tabs button{padding-inline:16px}
+      .sg-topic-pending-heading{margin:0}.sg-topic-pending-toggle{display:flex;align-items:center;gap:10px;width:100%;min-width:0;padding:6px 2px;border:0;border-radius:5px;background:transparent;text-align:left;cursor:pointer}.sg-topic-pending-toggle:hover{background:var(--sg-soft)}.sg-topic-pending-toggle>span:first-child{color:var(--sg-text);font-size:13px;font-weight:650}.sg-topic-pending .sg-directory-fold-inner>p{margin:4px 2px 8px;color:var(--sg-muted);font-size:12px}.sg-topic-read-status,.sg-topic-read-error{margin:5px 8px;color:var(--sg-muted);font-size:11px;line-height:1.6}.sg-topic-read-error{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.sg-topic-read-error button{padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--sg-accent);font-size:11px;cursor:pointer}.sg-topic-read-error button:hover{background:var(--sg-soft)}.sg-topic-show-all:disabled{color:var(--sg-muted)!important;cursor:wait;opacity:.6}
+      @media(max-width:650px){.sg-topic-chapter-header{grid-template-columns:34px minmax(0,1fr);gap:6px}.sg-topic-chapter-number{font-size:22px}.sg-topic-chapter-copy h2{font-size:15px}.sg-topic-chapter-toggle{flex-wrap:wrap;column-gap:8px;row-gap:0}.sg-topic-chapter-title{flex:1 1 calc(100% - 80px)}.sg-topic-sections{padding-left:23px}.sg-topic-section-body{margin-left:9px;padding-left:8px}.sg-topic-overview-text{padding-left:8px}.sg-topic-bootstrap-line{flex-wrap:wrap}.sg-topic-bootstrap-line>span:nth-child(2){flex-basis:calc(100% - 35px)}.sg-topic-status-details{margin-left:18px}.sg-long-tabs button{padding:7px 12px;font-size:12px}}
+      .sg-topic-directory{min-width:0;container-name:sg-topic-directory;container-type:inline-size}.sg-topic-section-toggle>span:nth-child(2),.sg-topic-overview-toggle>span:nth-child(2){min-width:0}
+      @container sg-topic-directory (max-width:320px){.sg-topic-chapter-header{grid-template-columns:26px minmax(0,1fr);gap:4px}.sg-topic-chapter-number{font-size:19px}.sg-topic-chapter-copy h2{font-size:14px}.sg-topic-chapter-toggle{display:grid;grid-template-columns:minmax(0,1fr) 18px;gap:0 4px}.sg-topic-chapter-label{grid-column:1;font-size:11px}.sg-topic-chapter-title{grid-column:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sg-topic-chapter-toggle>.sg-directory-chevron{grid-column:2;grid-row:2}.sg-topic-sections{padding-left:12px}.sg-topic-section-toggle,.sg-topic-overview-toggle{gap:5px;padding:6px 2px}.sg-topic-section-toggle>span:nth-child(2){flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.sg-topic-section-body{margin-left:0;padding-left:4px}.sg-directory-number{min-width:2.7em;font-size:11px;white-space:nowrap}.sg-topic-overview-text{padding:0 2px;font-size:12px}.sg-topic-event{gap:5px;padding:6px 2px}.sg-topic-event-title{font-size:11px}.sg-topic-description{font-size:11px}.sg-topic-show-all{margin-left:0;padding-left:2px;padding-right:2px;max-width:100%}.sg-topic-failures{padding-left:2px}.sg-topic-bootstrap-copy{margin-left:2px}}
+      @container sg-topic-directory (max-width:180px){.sg-topic-chapter-header{grid-template-columns:minmax(0,1fr)}.sg-topic-chapter-number{display:none}.sg-topic-sections{padding-left:0}.sg-topic-section-body{padding-left:0;border-left:0}.sg-topic-section-toggle,.sg-topic-overview-toggle{gap:3px;padding-inline:0;font-size:11px}.sg-directory-number{min-width:0;font-size:10px}.sg-topic-event{gap:3px;padding-inline:0}.sg-topic-event-arrow,.sg-directory-chevron{display:none}.sg-topic-bootstrap{padding-left:5px}.sg-topic-other-events{margin-inline:0}}
+      @media(prefers-reduced-motion:reduce){.sg-directory-fold,.sg-directory-chevron,.sg-topic-bootstrap{transition:none!important}.sg-topic-bootstrap .sg-processing-icon{animation:none!important}}
+    `
+
     const css = `
       .sg-memory {
         color-scheme:inherit;
@@ -348,6 +362,7 @@ window.__ModuleLoader__.load({
       .sg-profile-action:disabled{opacity:.45;cursor:default}.sg-profile-action:disabled:hover{background:transparent}
       @media(max-width:560px){.sg-profile-summary{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:8px}.sg-profile-group{padding:11px 12px 2px}.sg-profile-label,.sg-profile-value{font-size:12px}}
       ${eventDetailCss}
+      ${topicDirectoryCss}
     `
 
     const citationCss = `
@@ -449,7 +464,12 @@ window.__ModuleLoader__.load({
       let attempt = 0
       const request = () => fetch(url, { cache: 'no-store', ...options })
         .then((res) => res.json().catch(() => ({})).then((data) => {
-          if (!res.ok) throw new Error((data && data.error) || 'HTTP ' + res.status)
+          if (!res.ok) {
+            const error = new Error((data && data.error) || 'HTTP ' + res.status)
+            error.status = res.status
+            error.code = data?.code
+            throw error
+          }
           return data
         }))
         .catch((reason) => {
@@ -460,7 +480,10 @@ window.__ModuleLoader__.load({
             attempt += 1
             return new Promise((resolve) => window.setTimeout(resolve, attempt * 300)).then(request)
           }
-          throw new Error(message + '（' + path + '）')
+          const error = new Error(message + '（' + path + '）')
+          error.status = reason?.status
+          error.code = reason?.code
+          throw error
         })
       return request()
     }
@@ -2069,8 +2092,198 @@ window.__ModuleLoader__.load({
         h(EventDetailPanel, { event: preview.event, nodes, events, onNode, openSource })) : null)
     }
 
-    function LongTermPage({ events, eventPage, graph, project, query, setQuery, openEvent, namespace, focusNodeId }) {
-      const [mode, setMode] = React.useState('graph')
+    const TOPIC_SECTION_TITLES = { history: '发展脉络', decision: '关键设计决策', change: '重要变化', 'open-question': '尚未解决的问题', scope: '主题范围' }
+
+    function chapterOrdinal(value) {
+      const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+      if (value < 10) return digits[value]
+      if (value < 100) return (value < 20 ? '' : digits[Math.floor(value / 10)]) + '十' + (value % 10 ? digits[value % 10] : '')
+      return String(value)
+    }
+
+    // Overview has no persisted identity. Kind + occurrence keeps an existing
+    // section open when its text or source list changes in a dashboard refresh.
+    function topicSections(topic) {
+      const occurrences = new Map()
+      const totals = new Map()
+      for (const part of topic.overview || []) totals.set(part.kind, (totals.get(part.kind) || 0) + 1)
+      return (topic.overview || []).map((part) => {
+        const occurrence = occurrences.get(part.kind) || 0
+        occurrences.set(part.kind, occurrence + 1)
+        const title = TOPIC_SECTION_TITLES[part.kind] || '主题概览'
+        return { ...part, uiKey: String(part.kind) + ':' + occurrence, uiTitle: title + (totals.get(part.kind) > 1 ? '（' + chapterOrdinal(occurrence + 1) + '）' : '') }
+      })
+    }
+
+    function directoryScrollAction(saved, section, namespace, viewName) {
+      if (!saved) return 'none'
+      if (section !== 'long' || namespace !== saved.namespace) return 'clear'
+      return viewName === 'root' ? 'restore' : viewName === 'event' ? 'detail' : 'clear'
+    }
+
+    function DirectoryFold({ open, id, children }) {
+      const bodyRef = React.useRef(null)
+      React.useEffect(() => {
+        if (open) bodyRef.current?.removeAttribute('inert')
+        else bodyRef.current?.setAttribute('inert', '')
+      }, [open])
+      return h('div', { id, ref: bodyRef, className: 'sg-directory-fold ' + (open ? 'open' : ''), 'aria-hidden': !open }, h('div', { className: 'sg-directory-fold-inner' }, children))
+    }
+
+    function TopicEventRow({ event, number, openEvent }) {
+      return h('button', {
+        type: 'button', className: 'sg-topic-event', 'data-topic-event-id': event.id,
+        onClick: (click) => openEvent(event, click.currentTarget), title: event.title || event.summary || undefined,
+      }, number ? h('span', { className: 'sg-directory-number' }, number) : h('span', { className: 'sg-topic-pending-mark', 'aria-hidden': 'true' }, '·'),
+      h('span', { className: 'sg-topic-event-title' }, event.title || event.summary || '记忆事件'), h('span', { className: 'sg-topic-event-arrow', 'aria-hidden': 'true' }, '↗'))
+    }
+
+    function useTopicEventPages({ namespace, revision, topicId, sectionKey = '', total, active, wantAll, onDirectoryChanged }) {
+      const key = JSON.stringify([namespace, revision, topicId, sectionKey])
+      const empty = { key, epoch: 0, items: [], total, nextOffset: total ? 0 : null, loading: false, error: '' }
+      const [state, setState] = React.useState(empty)
+      const [retry, setRetry] = React.useState(0)
+      const requestRef = React.useRef({ key, epoch: 0, generation: 0, controller: null })
+      const changedRef = React.useRef(onDirectoryChanged)
+      changedRef.current = onDirectoryChanged
+      if (requestRef.current.key !== key) {
+        requestRef.current.controller?.abort()
+        requestRef.current = { key, epoch: requestRef.current.epoch + 1, generation: requestRef.current.generation + 1, controller: null }
+      }
+      // Old rows disappear in the same render as a workspace or revision change,
+      // before a promise or a later effect can return its previous result.
+      const epoch = requestRef.current.epoch
+      const current = state.key === key && state.epoch === epoch ? state : { ...empty, epoch }
+      React.useEffect(() => {
+        if (!active || !revision || !total) return undefined
+        if (current.error || (current.items.length && (!wantAll || current.nextOffset === null))) return undefined
+        const controller = new AbortController()
+        const generation = ++requestRef.current.generation
+        requestRef.current.controller = controller
+        const valid = () => !controller.signal.aborted && requestRef.current.key === key && requestRef.current.generation === generation
+        let items = current.items
+        let nextOffset = current.nextOffset ?? 0
+        let pageTotal = current.total
+        setState({ ...current, loading: true, error: '' })
+        const read = async () => {
+          do {
+            const offset = nextOffset
+            const page = await api('topic-events', { namespace, topicId, ...(sectionKey ? { sectionKey } : {}), offset, limit: 9, expectedRevision: revision }, { signal: controller.signal })
+            if (!valid()) return
+            if (page.revision !== revision || page.namespace !== namespace || page.topicId !== topicId || String(page.sectionKey || '') !== sectionKey) {
+              const error = new Error('目录已更新')
+              error.code = 'directory-changed'
+              throw error
+            }
+            if (!Array.isArray(page.items) || page.items.length > 9 || Number(page.offset) !== offset || (page.nextOffset !== null && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset))) throw new Error('事件分页响应无效')
+            items = [...items, ...page.items]
+            pageTotal = Number(page.total || 0)
+            nextOffset = page.nextOffset
+            setState({ key, epoch, items, total: pageTotal, nextOffset, loading: wantAll && nextOffset !== null, error: '' })
+          } while (wantAll && nextOffset !== null && valid())
+        }
+        void read().catch((reason) => {
+          if (!valid() || reason?.name === 'AbortError') return
+          if (reason?.code === 'directory-changed' || reason?.status === 409 || reason?.status === 404) {
+            setState({ key, epoch, items: [], total, nextOffset: 0, loading: false, error: '目录已有更新，正在读取最新目录。' })
+            changedRef.current?.()
+          } else setState({ key, epoch, items, total: pageTotal, nextOffset, loading: false, error: '暂时无法读取事件，请重试。' })
+        })
+        return () => {
+          controller.abort()
+          requestRef.current.generation += 1
+          setState((previous) => previous.key === key && previous.epoch === epoch && previous.loading ? { ...previous, loading: false } : previous)
+        }
+      }, [key, active, wantAll, retry])
+      return { ...current, items: revision ? (wantAll ? current.items : current.items.slice(0, 9)) : [], retry: () => { setState({ ...current, error: '' }); setRetry((value) => value + 1) } }
+    }
+
+    function TopicEventList({ namespace, revision, topicId, sectionKey = '', total, active, openEvent, numberPrefix, onDirectoryChanged, expandLabel, collapseLabel = '收起多余事件' }) {
+      const [showAll, setShowAll] = React.useState(false)
+      const page = useTopicEventPages({ namespace, revision, topicId, sectionKey, total, active, wantAll: showAll, onDirectoryChanged })
+      return h('div', { className: 'sg-topic-event-list', 'data-topic-event-scope': topicId + ':' + sectionKey },
+        page.items.map((event, index) => h(TopicEventRow, { key: event.id, event, number: numberPrefix ? numberPrefix + '.' + (index + 1) : undefined, openEvent })),
+        page.loading ? h('p', { className: 'sg-topic-read-status', role: 'status' }, showAll ? '正在读取事件 · ' + page.items.length + ' / ' + page.total : '正在读取事件…') : null,
+        page.error ? h('div', { className: 'sg-topic-read-error', role: 'alert' }, h('span', null, page.error), h('button', { type: 'button', onClick: page.retry }, '重新读取事件')) : null,
+        page.total > 9 ? h('button', { type: 'button', className: 'sg-topic-show-all', disabled: !showAll && (page.loading || Boolean(page.error)), 'aria-expanded': showAll, onClick: () => setShowAll((value) => !value) }, showAll ? collapseLabel : '还有 ' + (page.total - 9) + ' 条事件 · ' + (expandLabel || '展开全部')) : null)
+    }
+
+    function TopicSection({ part, chapter, index, topicId, namespace, revision, active, openEvent, onDirectoryChanged }) {
+      const [open, setOpen] = React.useState(false)
+      const [overviewOpen, setOverviewOpen] = React.useState(true)
+      const sectionNumber = chapter + '.' + index
+      const regionId = 'sg-topic-' + encodeURIComponent(topicId) + '-' + encodeURIComponent(part.uiKey)
+      const sourceCount = Number(part.sourceEventCount || 0)
+      return h('section', { className: 'sg-topic-section', 'data-section-index': String(index) },
+        h('h3', { className: 'sg-topic-section-heading' }, h('button', { type: 'button', className: 'sg-topic-section-toggle', title: part.uiTitle, 'aria-expanded': open, 'aria-controls': regionId, onClick: () => setOpen((current) => !current) },
+          h('span', { className: 'sg-directory-number' }, sectionNumber), h('span', null, part.uiTitle), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
+        h(DirectoryFold, { open, id: regionId }, h('div', { className: 'sg-topic-section-body' },
+          h('div', { className: 'sg-topic-overview' }, h('h4', { className: 'sg-topic-overview-heading' }, h('button', { type: 'button', className: 'sg-topic-overview-toggle', 'aria-expanded': overviewOpen, 'aria-controls': regionId + '-overview', onClick: () => setOverviewOpen((current) => !current) }, h('span', { className: 'sg-directory-number' }, sectionNumber + '.0'), h('span', null, '总览'), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
+            h(DirectoryFold, { open: overviewOpen, id: regionId + '-overview' }, h('p', { className: 'sg-topic-overview-text' }, part.text || '暂无总览'))),
+          h(TopicEventList, { namespace, revision, topicId, sectionKey: part.uiKey, total: sourceCount, active: active && open, openEvent, numberPrefix: sectionNumber, onDirectoryChanged }))))
+    }
+
+    function TopicChapter({ topic, number, namespace, revision, active, openEvent, onDirectoryChanged }) {
+      const [open, setOpen] = React.useState(true)
+      const [otherOpen, setOtherOpen] = React.useState(false)
+      const regionId = 'sg-topic-chapter-' + encodeURIComponent(topic.id)
+      const chapterLabel = '第' + chapterOrdinal(number) + '章'
+      return h('article', { className: 'sg-topic-chapter', 'data-topic-id': topic.id },
+        h('header', { className: 'sg-topic-chapter-header' },
+          h('span', { className: 'sg-topic-chapter-number', 'aria-hidden': 'true' }, String(number).padStart(2, '0')),
+          h('div', { className: 'sg-topic-chapter-copy' }, h('h2', null, h('button', { type: 'button', className: 'sg-topic-chapter-toggle', title: topic.title, 'aria-expanded': open, 'aria-controls': regionId, 'aria-label': chapterLabel + ' ' + topic.title, onClick: () => setOpen((current) => !current) }, h('span', { className: 'sg-topic-chapter-label' }, chapterLabel), h('span', { className: 'sg-topic-chapter-title' }, topic.title), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))), topic.description ? h('p', { className: 'sg-topic-description' }, topic.description) : null)),
+        h(DirectoryFold, { open, id: regionId }, h('div', { className: 'sg-topic-sections' },
+          topicSections(topic).map((part, index) => h(TopicSection, { key: part.uiKey, part, chapter: number, index: index + 1, topicId: topic.id, namespace, revision, active: active && open, openEvent, onDirectoryChanged })),
+          !(topic.overview || []).length ? h('p', { className: 'sg-topic-no-overview' }, '这个主题暂无总览，可查看关联事件。') : null,
+          (() => {
+            const remaining = Number(topic.coverage?.omittedEvents || 0)
+            return remaining ? h('details', { className: 'sg-topic-other-events', open: otherOpen, onToggle: (event) => setOtherOpen(event.currentTarget.open) }, h('summary', null, '其他关联事件 · ' + remaining), h(TopicEventList, { namespace, revision, topicId: topic.id, sectionKey: 'uncovered', total: remaining, active: active && open && otherOpen, openEvent, onDirectoryChanged })) : null
+          })())))
+    }
+
+    function TopicBootstrapNotice({ bootstrap, namespace, revision, active, openEvent, onDirectoryChanged }) {
+      const [detailsOpen, setDetailsOpen] = React.useState(false)
+      if (!bootstrap || Number(bootstrap.total || 0) === 0) return null
+      const failures = Number(bootstrap.failedEvents || 0)
+      const working = bootstrap.status === 'pending' || bootstrap.status === 'running'
+      if (!working && !failures) return null
+      return h('aside', { className: 'sg-topic-bootstrap ' + (failures ? 'attention' : 'processing'), 'aria-label': '历史记忆整理状态' },
+        h('div', { className: 'sg-topic-bootstrap-line', role: 'status', 'aria-live': 'polite' }, h('span', { className: working ? 'sg-processing-icon' : 'sg-topic-warning', 'aria-hidden': 'true' }, working ? '↻' : '⚠'),
+          h('span', null, working ? '正在整理历史记忆 · ' + Number(bootstrap.completed || 0) + ' / ' + Number(bootstrap.total || 0) : failures + ' 条历史记忆暂未完成整理'),
+          failures ? h('button', { type: 'button', className: 'sg-topic-status-details', 'aria-expanded': detailsOpen, 'aria-controls': 'sg-topic-bootstrap-details', onClick: () => setDetailsOpen((current) => !current) }, detailsOpen ? '收起详情' : '查看详情') : null),
+        h('p', { className: 'sg-topic-bootstrap-copy' }, working ? '不影响正常使用，未整理记忆仍可正常检索' : '原始记忆仍然保留，可正常检索'),
+        working && failures ? h('p', { className: 'sg-topic-bootstrap-copy' }, failures + ' 条历史记忆暂未完成整理') : null,
+        h(DirectoryFold, { open: detailsOpen, id: 'sg-topic-bootstrap-details' }, h('div', { className: 'sg-topic-failures' },
+          (bootstrap.failures || []).map((failure) => h('div', { key: failure.jobId, className: 'sg-topic-failure' }, h('p', null, '自动整理已停止' + (failure.attempts ? ' · 已尝试 ' + failure.attempts + ' 次' : '')),
+            h(TopicEventList, { namespace, revision, topicId: 'pending', sectionKey: 'failure:' + failure.jobId, total: Number(failure.eventCount || 0), active: active && detailsOpen, openEvent, onDirectoryChanged }), failure.lastError ? h('details', { className: 'sg-topic-failure-technical' }, h('summary', null, '技术详情'), h('p', null, failure.lastError)) : null)),
+          !(bootstrap.failures || []).length ? h('p', null, '部分历史记忆暂未形成主题，请从下方待整理事件或事件时间线查看。') : null)))
+    }
+
+    function TopicDirectory({ directory, namespace, active = true, openEvent, onDirectoryChanged }) {
+      const [pendingOpen, setPendingOpen] = React.useState(false)
+      const [invalidatedRevision, setInvalidatedRevision] = React.useState(null)
+      const revision = directory?.revision || ''
+      const blocked = invalidatedRevision === revision
+      // A successful dashboard read is a fresh snapshot even if content changed
+      // away and back to the same hash before the refresh completed.
+      React.useEffect(() => { setInvalidatedRevision(null) }, [directory])
+      const pageRevision = blocked ? '' : revision
+      const invalidate = React.useCallback(() => { setInvalidatedRevision(revision); return onDirectoryChanged?.() }, [revision, onDirectoryChanged])
+      const topics = directory?.topics || []
+      const pendingTotal = Number(directory?.pending?.total || 0)
+      return h('section', { className: 'sg-topic-directory', 'data-testid': 'stratagate-topic-directory', 'aria-label': '主题目录' },
+        h('header', { className: 'sg-topic-directory-intro' }, h('h2', null, '默认注入上下文'), h('p', null, '轻量目录默认进入上下文，帮助 Agent 找到记忆主题；具体事实仍来自事件和知识图谱。'),
+          directory?.context && !blocked ? h('details', { className: 'sg-topic-context' }, h('summary', null, '查看目录内容'), h('pre', null, directory.context)) : null),
+        blocked ? h('p', { className: 'sg-topic-read-error', role: 'status' }, '目录已有更新，正在重新读取。', h('button', { type: 'button', onClick: onDirectoryChanged }, '重新读取目录')) : null,
+        h('div', { hidden: blocked }, h(TopicBootstrapNotice, { bootstrap: directory?.bootstrap, namespace, revision: pageRevision, active: active && !blocked, openEvent, onDirectoryChanged: invalidate }),
+          !directory ? h('p', { className: 'sg-topic-empty', role: 'status' }, '暂时无法读取主题目录，请稍后重新打开。') : !topics.length && !pendingTotal ? h('div', { className: 'sg-topic-empty' }, h('h3', null, '还没有长期记忆'), h('p', null, '产生长期事件后，主题会在这里逐步整理成目录。')) : null,
+          topics.map((topic, index) => h(TopicChapter, { key: topic.id, topic, number: index + 1, namespace, revision: pageRevision, active: active && !blocked, openEvent, onDirectoryChanged: invalidate })),
+          pendingTotal ? h('section', { className: 'sg-topic-pending', 'aria-label': '待整理事件' }, h('h2', { className: 'sg-topic-pending-heading' }, h('button', { type: 'button', className: 'sg-topic-pending-toggle', 'aria-expanded': pendingOpen, 'aria-controls': 'sg-topic-pending-events', onClick: () => setPendingOpen((value) => !value) }, h('span', null, '待整理'), h('span', null, pendingTotal + ' 条事件'), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
+            h(DirectoryFold, { open: pendingOpen, id: 'sg-topic-pending-events' }, h('p', null, '这些记忆尚未形成稳定主题，仍可直接查看原事件。'), h(TopicEventList, { namespace, revision: pageRevision, topicId: 'pending', total: pendingTotal, active: active && !blocked && pendingOpen, openEvent, onDirectoryChanged: invalidate, expandLabel: '查看全部待整理', collapseLabel: '收起待整理事件' }))) : null))
+    }
+
+    function LongTermPage({ events, eventPage, graph, project, query, setQuery, openEvent, namespace, focusNodeId, onFocusHandled, topicDirectory, onDirectoryChanged, active = true }) {
+      const [mode, setMode] = React.useState('topics')
       const [selectedNodeId, setSelectedNodeId] = React.useState('')
       const [selectedEventId, setSelectedEventId] = React.useState('')
       const [graphNodeLimit, setGraphNodeLimit] = React.useState(100)
@@ -2102,9 +2315,10 @@ window.__ModuleLoader__.load({
         if (rank >= 0) setGraphNodeLimit((current) => Math.max(current, rank + 1))
         setSelectedNodeId(focusNodeId)
         setFullScreen(true)
-      }, [focusNodeId, nodes, nodeImportance])
+        onFocusHandled?.()
+      }, [focusNodeId, nodes, nodeImportance, onFocusHandled])
       React.useEffect(() => {
-        if (!fullScreen) return undefined
+        if (!fullScreen || !active) return undefined
         const previous = document.body.style.overflow
         document.body.style.overflow = 'hidden'
         const onKeyDown = (event) => {
@@ -2115,7 +2329,7 @@ window.__ModuleLoader__.load({
         }
         window.addEventListener('keydown', onKeyDown)
         return () => { document.body.style.overflow = previous; window.removeEventListener('keydown', onKeyDown) }
-      }, [fullScreen])
+      }, [fullScreen, active])
       const visibleNodes = nodes.filter((node) => node.status !== 'archived').filter((node) => !nodeType || node.type === nodeType).filter((node) => !nodeTag || (node.tags || []).includes(nodeTag)).filter((node) => !normalized || JSON.stringify(node).toLocaleLowerCase().includes(normalized))
       const displayedGraphIds = new Set([...visibleNodes].sort((left, right) => (nodeImportance.get(right.id)?.score || 0) - (nodeImportance.get(left.id)?.score || 0)).slice(0, graphNodeLimit).map((node) => node.id))
       const activeEdges = edges.filter((edge) => edge.status === 'active')
@@ -2149,7 +2363,9 @@ window.__ModuleLoader__.load({
           h('select', { value: eventFilters.type, onChange: (event) => setEventFilters({ ...eventFilters, type: event.target.value }), 'aria-label': '事件类型' }, h('option', { value: '' }, '全部类型'), Object.entries(EVENT_TYPE_TEXT).map(([value, label]) => h('option', { key: value, value }, label))),
           h('select', { value: eventFilters.status, onChange: (event) => setEventFilters({ ...eventFilters, status: event.target.value }), 'aria-label': '事件状态' }, h('option', { value: '' }, '全部状态'), Object.entries(EVENT_STATUS_TEXT).map(([value, label]) => h('option', { key: value, value }, label))))
       return h('section', { className: 'sg-long-explorer ' + (fullScreen ? 'fullscreen' : ''), 'aria-label': fullScreen ? '长期记忆全屏探索' : '长期记忆浏览' },
-        h('nav', { className: 'sg-long-tabs' }, h('button', { className: mode === 'graph' ? 'active' : '', onClick: () => setMode('graph') }, '知识图谱'), h('button', { className: mode === 'timeline' ? 'active' : '', onClick: () => setMode('timeline') }, '事件时间线')),
+        h('nav', { className: 'sg-long-tabs', 'aria-label': '长期记忆视角' }, [['topics', '主题目录'], ['graph', '知识图谱'], ['timeline', '事件时间线']].map(([id, label]) => h('button', { key: id, type: 'button', className: mode === id ? 'active' : '', 'aria-current': mode === id ? 'page' : undefined, onClick: () => { setMode(id); if (id === 'topics') { setFullScreen(false); setFiltersOpen(false) } } }, label))),
+        h('div', { hidden: mode !== 'topics' }, h(TopicDirectory, { directory: topicDirectory, namespace, active: active && mode === 'topics', openEvent, onDirectoryChanged })),
+        mode === 'topics' ? null : h(React.Fragment, null,
         migrationState !== 'complete' ? h('div', { className: 'sg-migration ' + (migrationState === 'processing' ? 'processing' : 'attention'), role: 'status' }, h('span', { className: 'sg-processing-icon', 'aria-hidden': 'true' }, migrationState === 'processing' ? '↻' : '⚠'), h('span', null, migrationNotice), h('small', null, migrationState === 'processing' ? '后台图谱投影仍在继续。' : migrationState === 'failed' ? '查看详情并手动重试。' : '查看详情。')) : null,
         h('div', { className: 'sg-long-toolbar' },
           h(SearchBox, { value: query, onChange: setQuery }),
@@ -2166,7 +2382,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'sg-long-layout ' + (fullScreen ? 'sg-timeline-layout' : 'sg-summary-layout') },
               h(TimelineList, { events: timelineEvents, nodes, onSelect: setSelectedEventId, selectedId: selectedEventId, floating: !fullScreen, onNode: selectNode, openSource: openEvent }),
               fullScreen ? h(EventDetailPanel, { event: timelineEvents.find((event) => event.id === selectedEventId), nodes, events: timelineEvents, onNode: selectNode, openSource: openEvent }) : null),
-            h(Pagination, { page: pagedEvents.page, loading: pagedEvents.loading, error: pagedEvents.error, onOffset: pagedEvents.loadOffset })))
+            h(Pagination, { page: pagedEvents.page, loading: pagedEvents.loading, error: pagedEvents.error, onOffset: pagedEvents.loadOffset }))))
     }
 
     function previewText(value) {
@@ -3491,6 +3707,7 @@ window.__ModuleLoader__.load({
       const [section, setSection] = React.useState('short')
       const [view, setView] = React.useState({ name: 'root' })
       const [graphFocusNodeId, setGraphFocusNodeId] = React.useState('')
+      const consumeGraphFocus = React.useCallback(() => setGraphFocusNodeId(''), [])
       const [data, setData] = React.useState({ events: [], graph: { nodes: [], edges: [], migration: null }, blocks: [], openBlock: null, conversations: [], activeThreadId: null, audit: [], pagination: { events: { total: 0, offset: 0, limit: 40 }, blocks: { total: 0, offset: 0, limit: 40 }, audit: { total: 0, offset: 0, limit: 100 } } })
       const [query, setQuery] = React.useState('')
       const [source, setSource] = React.useState(null)
@@ -3505,6 +3722,7 @@ window.__ModuleLoader__.load({
       const feedbackDeepLinkRef = React.useRef(readFeedbackNavigationState(navigationState) || readFeedbackDeepLink())
       const graphNodeNavigationRef = React.useRef(readGraphNodeNavigationState(navigationState) || readGraphNodeDeepLink())
       const feedbackNavigationStateRef = React.useRef(navigationState)
+      const directoryScrollRef = React.useRef(null)
       const reportError = (reason) => {
         const message = String(reason?.message || reason)
         setError(message)
@@ -3527,7 +3745,7 @@ window.__ModuleLoader__.load({
 
       const loadDashboard = React.useCallback((activeNamespace, options = {}) => {
         const background = options.background === true
-        if (background && dashboardRequestRef.current) return Promise.resolve(null)
+        if (background && !options.force && dashboardRequestRef.current) return Promise.resolve(null)
         dashboardRequestRef.current?.abort()
         const controller = new AbortController()
         dashboardRequestRef.current = controller
@@ -3538,6 +3756,7 @@ window.__ModuleLoader__.load({
           ...(activeNamespace ? { namespace: activeNamespace } : {}),
           ...(options.threadId ? { threadId: options.threadId } : {}),
         }, { etag: options.force ? '' : dashboardEtagsRef.current.get(key), signal: controller.signal }).then((result) => {
+          if (controller.signal.aborted || dashboardRequestRef.current !== controller) return null
           if (result.etag) dashboardEtagsRef.current.set(key, result.etag)
           if (result.notModified || !result.data) return null
           const next = result.data
@@ -3554,12 +3773,14 @@ window.__ModuleLoader__.load({
           setError('')
           return next
         }).catch((reason) => {
+          if (controller.signal.aborted || dashboardRequestRef.current !== controller) return null
           if (reason?.name !== 'AbortError') reportError(reason)
           if (options.propagateError === true && reason?.name !== 'AbortError') throw reason
           return null
         }).finally(() => {
-          if (dashboardRequestRef.current === controller) dashboardRequestRef.current = null
-          if (!background) setLoading(false)
+          if (dashboardRequestRef.current !== controller) return
+          dashboardRequestRef.current = null
+          setLoading(false)
         })
       }, [])
 
@@ -3604,6 +3825,7 @@ window.__ModuleLoader__.load({
       }, [navigationState, loadDashboard])
       React.useEffect(() => {
         if (!namespace || loadedNamespaceRef.current === namespace) return
+        directoryScrollRef.current = null
         setConversationId(''); setView({ name: 'root' }); setSource(null); setData({ events: [], graph: { nodes: [], edges: [], migration: null }, blocks: [], openBlock: null, conversations: [], activeThreadId: null, audit: [], pagination: { events: { total: 0, offset: 0, limit: 40 }, blocks: { total: 0, offset: 0, limit: 40 }, audit: { total: 0, offset: 0, limit: 100 } } }); void loadDashboard(namespace, { force: true })
       }, [namespace, loadDashboard])
       React.useEffect(() => {
@@ -3658,7 +3880,7 @@ window.__ModuleLoader__.load({
         conversations.push(memory)
       }
       conversations.sort((left, right) => left.id === '__legacy__' ? 1 : right.id === '__legacy__' ? -1 : 0)
-      const goSection = (next) => { setSection(next); setView({ name: 'root' }); setSource(null) }
+      const goSection = (next) => { directoryScrollRef.current = null; setSection(next); setView({ name: 'root' }); setSource(null) }
       const sourceParams = (kind, item) => kind === 'event' ? { eventId: item.id } : kind === 'element' ? { elementId: item.id } : { blockId: item.id }
       const loadSource = (kind, item) => {
         setSource(null)
@@ -3667,8 +3889,34 @@ window.__ModuleLoader__.load({
       const openWithSource = (kind, item) => {
         setView((current) => ({ name: kind, item, back: current })); loadSource(kind, item)
       }
-      const openEvent = (event) => openWithSource('event', data.events.find((item) => item.id === event.id) || event)
+      const openEvent = (event, trigger) => {
+        if (trigger?.getAttribute?.('data-topic-event-id')) {
+          const ancestors = []
+          for (let node = trigger.parentElement; node; node = node.parentElement) {
+            if (node.scrollHeight > node.clientHeight) ancestors.push({ node, top: node.scrollTop, left: node.scrollLeft })
+          }
+          directoryScrollRef.current = { namespace, eventId: event.id, trigger, ancestors, top: window.scrollY || 0, left: window.scrollX || 0 }
+        }
+        openWithSource('event', data.events.find((item) => item.id === event.id) || event)
+      }
+      ;(React.useLayoutEffect || React.useEffect)(() => {
+        const saved = directoryScrollRef.current
+        const action = directoryScrollAction(saved, section, namespace, view.name)
+        if (action === 'none') return
+        if (action === 'clear') { directoryScrollRef.current = null; return }
+        if (action === 'detail') {
+          for (const { node } of saved.ancestors) { node.scrollTop = 0; node.scrollLeft = 0 }
+          window.scrollTo?.(0, 0)
+        } else if (action === 'restore') {
+          const trigger = saved.trigger?.isConnected && saved.trigger.getClientRects().length ? saved.trigger : Array.from(document.querySelectorAll('.sg-topic-event[data-topic-event-id]')).find((node) => node.getAttribute('data-topic-event-id') === saved.eventId && node.getClientRects().length)
+          trigger?.focus?.({ preventScroll: true })
+          for (const { node, top, left } of saved.ancestors) { node.scrollTop = top; node.scrollLeft = left }
+          window.scrollTo?.(saved.left, saved.top)
+          directoryScrollRef.current = null
+        }
+      }, [view.name, section, namespace])
       const openGraphNode = (nodeId) => {
+        directoryScrollRef.current = null
         setSection('long')
         setQuery('')
         setView({ name: 'root' })
@@ -3683,6 +3931,7 @@ window.__ModuleLoader__.load({
       }
       const backLabel = view.back?.name === 'block' ? '短期记忆' : view.back?.name === 'event' ? '长期记忆' : view.back?.name === 'structure' ? '记忆结构' : section === 'short' ? '短期记忆' : '长期记忆'
       const refresh = (options = {}) => loadDashboard(namespace, { threadId: conversationId, force: true, ...options })
+      const refreshDirectory = React.useCallback(() => loadDashboard(namespace, { threadId: conversationId, background: true, force: true }), [namespace, conversationId, loadDashboard])
       const selectConversation = (nextConversationId) => {
         setConversationId(nextConversationId)
         return loadDashboard(namespace, { threadId: nextConversationId, force: true })
@@ -3698,7 +3947,8 @@ window.__ModuleLoader__.load({
       const moreBack = () => setView({ name: 'root' })
 
       let content = null
-      if (loading && !selected) content = h(Loading)
+      if (section === 'long' && loadedNamespaceRef.current !== namespace) content = h(Loading)
+      else if (loading && !selected) content = h(Loading)
       else if (view.name === 'settings' && !selected) content = h(SettingsPage, { selected: { blockTurnSize: 6, blockDecayLambda: 0.3, agentMemoryRetrievalWeight: 1, currentTurn: 0, schemaVersion: 12 }, namespace, dataDirectory: overview.dataDirectory, onBack: moreBack, setView, updateSettings, savingSettings, usePluginSettings, setEffort, resetEffort })
       else if (section === 'profile' && view.name === 'root') content = h(ProfilePage)
       else if (!selected && section !== 'more') content = h(Empty, { title: '还没有记忆', copy: '完成一些 DSH 对话后，短期记忆和长期记忆会出现在这里。' })
@@ -3713,7 +3963,7 @@ window.__ModuleLoader__.load({
       else if (view.name === 'settings') content = h(SettingsPage, { selected, namespace, dataDirectory: overview.dataDirectory, onBack: moreBack, setView, updateSettings, savingSettings, usePluginSettings, setEffort, resetEffort })
       else if (view.name === 'support') content = h(SupportPage, { namespace, overview, selected, data, recentError, onBack: moreBack })
       else content = h(React.Fragment, null,
-        loading ? h(Loading) : section === 'short' ? h(ShortTermPage, { key: namespace + ':' + conversationId, blocks: data.blocks, blockPage: data.pagination?.blocks, openBlock: data.openBlock, conversations, activeThreadId: conversationId || data.activeThreadId || '', namespace, onConversationChange: selectConversation, refresh }) : section === 'long' ? h(LongTermPage, { key: namespace, events: data.events, eventPage: data.pagination?.events, graph: data.graph, project, query, setQuery, openEvent, namespace, focusNodeId: graphFocusNodeId }) : h(MoreHome, { setView }))
+        loading ? h(Loading) : section === 'short' ? h(ShortTermPage, { key: namespace + ':' + conversationId, blocks: data.blocks, blockPage: data.pagination?.blocks, openBlock: data.openBlock, conversations, activeThreadId: conversationId || data.activeThreadId || '', namespace, onConversationChange: selectConversation, refresh }) : section === 'long' ? null : h(MoreHome, { setView }))
 
       return h('main', { className: 'sg-memory', 'data-testid': 'stratagate-memory-ui' },
         h('style', null, css),
@@ -3731,7 +3981,9 @@ window.__ModuleLoader__.load({
         h('nav', { className: 'sg-tabs', 'aria-label': '记忆视图' }, [['profile', '常驻画像'], ['short', '短期记忆'], ['long', '长期记忆'], ['more', '更多']].map(([id, label]) => h('button', { key: id, type: 'button', className: 'sg-tab ' + (section === id ? 'active' : ''), 'aria-current': section === id ? 'page' : undefined, onClick: () => goSection(id) }, label))),
         error ? h('div', { className: 'sg-error' }, h('div', { className: 'sg-error-title' }, '暂时无法读取完整记忆'), h('div', null, '已显示能够读取的内容，请稍后重新加载。'), h('details', null, h('summary', null, '技术详情'), h('div', { className: 'sg-code' }, error))) : null,
         view.name === 'status' ? null : h(MemoryStatusAlert, { overview: error ? null : selected, onOpen: (stage) => setView({ name: 'status', stage }) }),
-        h('section', { key: section + ':' + view.name, className: 'sg-view', 'aria-label': 'StrataGate 记忆内容' }, content),
+        h('section', { key: section, className: 'sg-view', 'aria-label': 'StrataGate 记忆内容' }, section === 'long' && selected && loadedNamespaceRef.current === namespace ? h(React.Fragment, null,
+          h('div', { key: 'long-browser', hidden: view.name !== 'root' }, h(LongTermPage, { key: namespace, events: data.events, eventPage: data.pagination?.events, graph: data.graph, project, query, setQuery, openEvent, namespace, focusNodeId: graphFocusNodeId, onFocusHandled: consumeGraphFocus, topicDirectory: data.topicDirectory, onDirectoryChanged: refreshDirectory, active: view.name === 'root' })),
+          view.name === 'root' ? null : content) : content),
         h('footer', { className: 'sg-footer' }, '发现问题？ ', h('button', { type: 'button', onClick: () => { setSection('more'); setView({ name: 'support' }); setSource(null) } }, '提交反馈')))
     }
 
