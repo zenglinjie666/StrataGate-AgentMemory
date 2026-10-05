@@ -348,6 +348,36 @@ describe('read-only Topic Directory admin data', () => {
     expect((await request(runtime, query)).status).toBe(409)
   })
 
+  it('keeps existing section numbers when a new proposal precedes inherited paragraphs', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('old-a'), event('old-b'), event('new-c')]
+    const stored = topic('chapter', snapshot.events.slice(0, 2))
+    const a = { kind: 'history' as const, title: '界面与交互', text: '旧 A', sourceEventIds: ['old-a'] }
+    const b = { kind: 'history' as const, title: 'DSH 兼容', text: '旧 B', sourceEventIds: ['old-b'] }
+    stored.overview = [a, b]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.topics = [stored]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    const runtime = fakeRuntime(snapshot)
+    const before = (await request(runtime)).body
+    expect(before.topics[0].sections.map(({ title }: { title: string }) => title)).toEqual([a.title, b.title])
+    // The actual storage shape: proposal first, inherited paragraphs after it;
+    // membership keeps old sources then appends the new Event.
+    stored.sourceEventIds.push('new-c')
+    stored.sourceVersions = versions(snapshot.events)
+    stored.dependencyVersions = versions(snapshot.events)
+    stored.overview = [{ kind: 'change', title: '发布与版本', text: '新 C', sourceEventIds: ['new-c'] }, b, a]
+    const after = (await request(runtime)).body
+    const sections = after.topics[0].sections
+    expect(sections.map(({ title }: { title: string }) => title)).toEqual([a.title, b.title, '发布与版本'])
+    expect(sections.slice(0, 2).map(({ key }: { key: string }) => key)).toEqual(before.topics[0].sections.map(({ key }: { key: string }) => key))
+    expect(after.revision).not.toBe(before.revision)
+    for (const [index, id] of ['old-a', 'old-b', 'new-c'].entries()) {
+      const page = await request(runtime, `topic-events&topicId=chapter&sectionKey=${sections[index].key}&expectedRevision=${after.revision}`)
+      expect(page.body.items.map(({ id }: { id: string }) => id)).toEqual([id])
+    }
+  })
+
   it('keeps pending ordering predictable by creation time and ID', async () => {
     const snapshot = emptySnapshot()
     snapshot.events = [

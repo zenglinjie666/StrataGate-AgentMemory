@@ -41,7 +41,7 @@ function currentPluginVersion(): string {
 const STRATAGATE_DSH_VERSION = currentPluginVersion()
 // Invalidate cached paragraph-based views even for prerelease builds that share
 // a package version and unchanged database revision.
-const TOPIC_DIRECTORY_VIEW_VERSION = 2
+const TOPIC_DIRECTORY_VIEW_VERSION = 3
 
 function graphProjectionIsProcessing(job: {
   status: string

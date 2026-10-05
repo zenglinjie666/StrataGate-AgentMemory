@@ -591,6 +591,8 @@ describe('memory topic runtime boundaries', () => {
     }
   })
 
+  // This fixture writes 61 Events and reopens SQLite across several windows;
+  // allow slow Windows CI disks without changing the fake-clock cost bounds.
   it('persists a database-wide backfill budget across restarts, prioritizes new Events and resumes in later windows', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-budget-'))
     const database = join(directory, 'memory.db')
@@ -656,7 +658,7 @@ describe('memory topic runtime boundaries', () => {
       await runtime.close()
       await rm(directory, { recursive: true, force: true })
     }
-  }, 15_000)
+  }, 45_000)
 
   it('keeps an incremental claim returned after a competing writer completes earlier work during a refresh race', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-initialize-race-'))

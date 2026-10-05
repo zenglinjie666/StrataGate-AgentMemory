@@ -191,6 +191,38 @@ describe('Topic Directory client interactions', () => {
     expect(sections[0].paragraphs.map((part: any) => part.text)).toEqual(['UI 历史', 'UI 决定'])
   })
 
+  it('keeps .1 and .2 numbers when a new Event section is prepended by the projector', () => {
+    const client = clientRenderer()
+    const directory = fixture()
+    const chapter = directory.topics[0]!
+    chapter.overview[0].title = '界面与交互'
+    chapter.overview[1].title = 'DSH 兼容'
+    const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() }
+    let tree = client.render(client.TopicDirectory, props)
+    expect(buttons(tree, '1.1界面与交互›')).toHaveLength(1)
+    expect(buttons(tree, '1.2DSH 兼容›')).toHaveLength(1)
+    buttons(tree, '1.1界面与交互›')[0]!.props.onClick()
+    client.render(client.TopicDirectory, props)
+    chapter.sourceEventIds.push('event-26')
+    chapter.overview.unshift({ kind: 'change', title: '发布与版本', text: '新增发布', sourceEventIds: ['event-26'] })
+    directory.revision = 'revision-2'
+    tree = client.render(client.TopicDirectory, props)
+    expect(buttons(tree, '1.1界面与交互›')[0]!.props['aria-expanded']).toBe(true)
+    expect(buttons(tree, '1.2DSH 兼容›')).toHaveLength(1)
+    expect(buttons(tree, '1.3发布与版本›')).toHaveLength(1)
+    expect(buttons(tree, '1.1.0总览›')).toHaveLength(1)
+  })
+
+  it('uses stable section identity for shared-source ties even when paragraph order changes', () => {
+    const topic = { sourceEventIds: ['E1'], overview: [
+      { kind: 'history' as const, title: '界面与交互', text: '界面', sourceEventIds: ['E1'] },
+      { kind: 'decision' as const, title: 'DSH 兼容', text: '兼容', sourceEventIds: ['E1'] },
+    ] }
+    const first = memoryTopicSections(topic).map(({ key }) => key)
+    topic.overview.reverse()
+    expect(memoryTopicSections(topic).map(({ key }) => key)).toEqual(first)
+  })
+
   it('posts the selected failed batch once and refreshes only after it is queued', async () => {
     let resolve!: (value: any) => void
     const client = clientRenderer(true, (url: string, options: any) => {

@@ -11,7 +11,8 @@ export function memoryTopicSectionKey(title: string): string {
 /** Read-only organization: paragraphs keep their own evidence; a section owns
  * the first-seen union of their chapter-owned sources, not rewritten prose. */
 export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
-  const members = new Set(topic.sourceEventIds)
+  const memberPositions = new Map<string, number>()
+  topic.sourceEventIds.forEach((id, index) => { if (!memberPositions.has(id)) memberPositions.set(id, index) })
   const sections = new Map<string, { key: string; title: string; paragraphs: MemoryTopic['overview']; sourceEventIds: string[] }>()
   for (const part of topic.overview) {
     const title = part.title?.trim() || SECTION_TITLES[part.kind] || '主题概览'
@@ -22,9 +23,16 @@ export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourc
       sections.set(identity, section)
     }
     section.paragraphs.push(part)
-    for (const id of part.sourceEventIds) if (members.has(id)) section.sourceEventIds.push(id)
+    for (const id of part.sourceEventIds) if (memberPositions.has(id)) section.sourceEventIds.push(id)
   }
-  return [...sections.values()].map((section) => ({ ...section, sourceEventIds: [...new Set(section.sourceEventIds)] }))
+  // Membership preserves older members before appended Events. Proposal prose
+  // can precede inherited prose, so its array order must not renumber the book.
+  // Immutable section identity breaks shared-source ties independently of prose.
+  return [...sections.values()].map((section) => ({
+    section: { ...section, sourceEventIds: [...new Set(section.sourceEventIds)] },
+    firstSourceIndex: section.sourceEventIds.reduce((first, id) => Math.min(first, memberPositions.get(id)!), Infinity),
+  })).sort((a, b) => a.firstSourceIndex - b.firstSourceIndex || a.section.key.localeCompare(b.section.key))
+    .map(({ section }) => section)
 }
 
 export function memoryTopicSectionNavigation(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
