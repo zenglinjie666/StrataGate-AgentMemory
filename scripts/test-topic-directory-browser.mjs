@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -25,6 +26,7 @@ const outputDirectory = resolve(process.env.STRATAGATE_BROWSER_SCREENSHOTS || jo
 await mkdir(outputDirectory, { recursive: true })
 const baseline = durableBrowserSnapshot(database)
 const browser = await chromium.launch({ executablePath: chrome, headless: true })
+const sectionKey = (title) => 'section:' + createHash('sha256').update(title).digest('hex')
 const requests = []
 const errors = []
 const screenshots = []
@@ -108,7 +110,7 @@ try {
     const toggle = target.locator('button').first()
     if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
     await target.getByRole('button', { name: `${chapterIndex + 1}.${sectionIndex}.0 总览`, exact: true }).waitFor()
-    const expected = chapterIndex === 0 ? [8, 9, 9, 1][sectionIndex - 1] : [1, 9, 9, 1, 9, 9, 1, 9][sectionIndex - 1]
+    const expected = chapterIndex === 0 ? [8, 9, 9, 1][sectionIndex - 1] : [9, 9, 9, 1, 9][sectionIndex - 1]
     await page.waitForFunction(({ id, sectionIndex, expected }) => {
       const section = document.querySelector(`[data-topic-id="${id}"] .sg-topic-section[data-section-index="${sectionIndex}"]`)
       return section?.querySelectorAll('.sg-topic-event[data-topic-event-id]').length === expected
@@ -117,7 +119,7 @@ try {
   }
   const eventRows = (target) => target.locator('.sg-topic-event[data-topic-event-id]:visible')
   const eight = await openSection(0, 1)
-  assert.deepEqual(topicRequests(fixtures.topicIds[0], 'history:0').map(({ offset, limit }) => [offset, limit]), [['0', '9']])
+  assert.deepEqual(topicRequests(fixtures.topicIds[0], sectionKey('发展脉络')).map(({ offset, limit }) => [offset, limit]), [['0', '9']])
   assert.equal(await eventRows(eight).count(), 8)
   assert.equal(await eight.getByRole('button', { name: /展开全部/ }).count(), 0)
   assert.equal(await eight.getByRole('button', { name: '1.1.0 总览', exact: true }).getAttribute('aria-expanded'), 'true')
@@ -144,24 +146,24 @@ try {
   assert.equal(await sectionToggle.getAttribute('aria-expanded'), 'true')
   assert.equal(await overviewToggle.getAttribute('aria-expanded'), 'true')
   checks.push('chapter-section-and-overview-collapse-reopen-preserves-state')
-  assert.equal(topicRequests(fixtures.topicIds[0], 'history:0').length, 1, 'Reopening unchanged section refetched its cached first page')
+  assert.equal(topicRequests(fixtures.topicIds[0], sectionKey('发展脉络')).length, 1, 'Reopening unchanged section refetched its cached first page')
   const nine = await openSection(0, 2)
   assert.equal(await eventRows(nine).count(), 9)
   assert.equal(await nine.getByRole('button', { name: /展开全部/ }).count(), 0)
-  assert.deepEqual(topicRequests(fixtures.topicIds[0], 'decision:0').map(({ offset, limit }) => [offset, limit]), [['0', '9']])
+  assert.deepEqual(topicRequests(fixtures.topicIds[0], sectionKey('关键设计决策')).map(({ offset, limit }) => [offset, limit]), [['0', '9']])
   const twelve = await openSection(0, 3)
-  assert.deepEqual(topicRequests(fixtures.topicIds[0], 'change:0').map(({ offset, limit }) => [offset, limit]), [['0', '9']])
+  assert.deepEqual(topicRequests(fixtures.topicIds[0], sectionKey('重要变化')).map(({ offset, limit }) => [offset, limit]), [['0', '9']])
   assert.equal(await eventRows(twelve).count(), 9)
   await twelve.getByRole('button', { name: '还有 3 条事件 · 展开全部', exact: true }).click()
   await page.waitForFunction((id) => document.querySelector(`[data-topic-id="${id}"] [data-section-index="3"]`)?.querySelectorAll('.sg-topic-event').length === 12, fixtures.topicIds[0])
   assert.equal(await eventRows(twelve).count(), 12)
-  assert.deepEqual(topicRequests(fixtures.topicIds[0], 'change:0').map(({ offset, limit }) => [offset, limit]), [['0', '9'], ['9', '9']])
+  assert.deepEqual(topicRequests(fixtures.topicIds[0], sectionKey('重要变化')).map(({ offset, limit }) => [offset, limit]), [['0', '9'], ['9', '9']])
   assert.equal(await eventRows(twelve).nth(11).locator('.sg-directory-number').textContent(), '1.3.12')
   await twelve.getByRole('button', { name: '收起多余事件', exact: true }).click()
   assert.equal(await eventRows(twelve).count(), 9)
   await twelve.getByRole('button', { name: '还有 3 条事件 · 展开全部', exact: true }).click()
   assert.equal(await eventRows(twelve).count(), 12)
-  assert.equal(topicRequests(fixtures.topicIds[0], 'change:0').length, 2, 'Expand-all discarded the cached second page')
+  assert.equal(topicRequests(fixtures.topicIds[0], sectionKey('重要变化')).length, 2, 'Expand-all discarded the cached second page')
   await twelve.getByRole('button', { name: '收起多余事件', exact: true }).click()
   const one = await openSection(0, 4)
   assert.equal(await eventRows(one).count(), 1)
@@ -276,7 +278,7 @@ try {
   const abortPage = async (route) => {
     const url = new URL(route.request().url())
     if (url.searchParams.get('namespace') === fixtures.pending
-      && url.searchParams.get('topicId') === fixtures.topicIds[0] && url.searchParams.get('sectionKey') === 'history:0') {
+      && url.searchParams.get('topicId') === fixtures.topicIds[0] && url.searchParams.get('sectionKey') === sectionKey('发展脉络')) {
       abortedPageRequests += 1
       await route.abort('failed')
     } else await route.continue()
@@ -321,7 +323,7 @@ try {
   const rejectStalePage = async (route) => {
     const url = new URL(route.request().url())
     if (rejectFirstPage && url.searchParams.get('namespace') === fixtures.running
-      && url.searchParams.get('topicId') === fixtures.topicIds[0] && url.searchParams.get('sectionKey') === 'history:0') {
+      && url.searchParams.get('topicId') === fixtures.topicIds[0] && url.searchParams.get('sectionKey') === sectionKey('发展脉络')) {
       rejectFirstPage = false
       const revision = url.searchParams.get('expectedRevision')
       url.searchParams.set('expectedRevision', (revision[0] === 'a' ? 'b' : 'a') + revision.slice(1))
@@ -390,13 +392,18 @@ try {
   checks.push('bootstrap-pending-running-completed-failed-empty')
 
   await selectNamespace(fixtures.normal)
-  assert.match(await section(1, 1).locator('.sg-topic-section-toggle').textContent(), /发展脉络.*（一）/)
-  assert.match(await section(1, 6).locator('.sg-topic-section-toggle').textContent(), /发展脉络.*（二）/)
-  assert.match(await section(1, 2).locator('.sg-topic-section-toggle').textContent(), /关键设计决策.*（一）/)
-  assert.match(await section(1, 7).locator('.sg-topic-section-toggle').textContent(), /关键设计决策.*（二）/)
-  checks.push('duplicate-section-kinds-have-distinct-static-ordinal-labels')
+  assert.equal(await chapter(1).locator('.sg-topic-section').count(), 5)
+  assert.match(await section(1, 1).locator('.sg-topic-section-toggle').textContent(), /发展脉络/)
+  const grouped = await openSection(1, 1)
+  assert.equal(await grouped.locator('.sg-topic-overview-text').count(), 2)
+  assert.equal(await grouped.locator('.sg-topic-overview-toggle').count(), 1)
+  await grouped.getByRole('button', { name: '还有 3 条事件 · 展开全部', exact: true }).click()
+  await page.waitForFunction((id) => document.querySelector(`[data-topic-id="${id}"] [data-section-index="1"]`)?.querySelectorAll('.sg-topic-event').length === 12, fixtures.topicIds[1])
+  assert.equal(new Set(await eventRows(grouped).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-topic-event-id')))).size, 12)
+  await grouped.getByRole('button', { name: '收起多余事件', exact: true }).click()
+  checks.push('same-title-paragraphs-one-section-one-overview-unique-paged-event-union')
   for (let index = 1; index <= 4; index++) await openSection(0, index)
-  for (let index = 1; index <= 8; index++) await openSection(1, index)
+  for (let index = 1; index <= 5; index++) await openSection(1, index)
   await directory.evaluate(async (element) => {
     // Test stable scroll restoration after the intentionally animated section
     // layout has settled; ignore unrelated infinite processing animations.
@@ -405,7 +412,7 @@ try {
       .map((animation) => animation.finished))
     await new Promise((resolve) => requestAnimationFrame(resolve))
   })
-  const deepEvent = eventRows(section(1, 8)).last()
+  const deepEvent = eventRows(section(1, 5)).last()
   await deepEvent.scrollIntoViewIfNeeded()
   await deepEvent.evaluate((element) => {
     const ancestors = []
@@ -423,7 +430,7 @@ try {
     return document.activeElement === saved.element && Math.abs(window.scrollY - saved.top) <= 5
       && saved.ancestors.every(({ node, top, left }) => Math.abs(node.scrollTop - top) <= 5 && Math.abs(node.scrollLeft - left) <= 5)
   })
-  assert.equal(await section(1, 8).locator('.sg-topic-section-toggle').getAttribute('aria-expanded'), 'true')
+  assert.equal(await section(1, 5).locator('.sg-topic-section-toggle').getAttribute('aria-expanded'), 'true')
   checks.push('deep-event-back-preserves-specific-trigger-focus-and-scroll')
   await chapter(0).scrollIntoViewIfNeeded()
   const themeColors = async () => memory.evaluate((element) => {
@@ -434,7 +441,7 @@ try {
   await capture('topic-directory-desktop-light')
   await chapter(1).scrollIntoViewIfNeeded()
   await capture('topic-directory-desktop-many-sections')
-  assert.equal(await chapter(1).locator('.sg-topic-section').count(), 8)
+  assert.equal(await chapter(1).locator('.sg-topic-section').count(), 5)
   await page.setViewportSize({ width: 420, height: 900 })
   await chapter(0).scrollIntoViewIfNeeded()
   const checkHorizontalFit = async () => {

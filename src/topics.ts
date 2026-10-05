@@ -1,4 +1,42 @@
+import { createHash } from 'node:crypto'
 import { bm25Rank, estimateTokens, weightedSearchTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
+
+const SECTION_TITLES: Record<string, string> = { history: '发展脉络', decision: '关键设计决策', change: '重要变化', 'open-question': '尚未解决的问题', scope: '主题范围' }
+
+export function memoryTopicSectionKey(title: string): string {
+  const identity = title.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase()
+  return 'section:' + createHash('sha256').update(identity).digest('hex')
+}
+
+/** Read-only organization: paragraphs keep their own evidence; a section owns
+ * the first-seen union of their chapter-owned sources, not rewritten prose. */
+export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
+  const members = new Set(topic.sourceEventIds)
+  const sections = new Map<string, { key: string; title: string; paragraphs: MemoryTopic['overview']; sourceEventIds: string[] }>()
+  for (const part of topic.overview) {
+    const title = part.title?.trim() || SECTION_TITLES[part.kind] || '主题概览'
+    const identity = memoryTopicSectionKey(title)
+    let section = sections.get(identity)
+    if (!section) {
+      section = { key: identity, title, paragraphs: [], sourceEventIds: [] }
+      sections.set(identity, section)
+    }
+    section.paragraphs.push(part)
+    for (const id of part.sourceEventIds) if (members.has(id)) section.sourceEventIds.push(id)
+  }
+  return [...sections.values()].map((section) => ({ ...section, sourceEventIds: [...new Set(section.sourceEventIds)] }))
+}
+
+export function memoryTopicSectionNavigation(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
+  return memoryTopicSections(topic).map(({ sourceEventIds, paragraphs, ...section }) => ({
+    ...section,
+    sourceEventCount: sourceEventIds.length,
+    paragraphs: paragraphs.map((part) => ({ kind: part.kind, text: part.text,
+      ...(part.title === undefined ? {} : { title: part.title }),
+      sourceEventCount: new Set(part.sourceEventIds).size,
+    })),
+  }))
+}
 
 export const MEMORY_DIRECTORY_TOKEN_BUDGET = 400
 export const TOPIC_OVERVIEW_TOKEN_BUDGET = 2_400

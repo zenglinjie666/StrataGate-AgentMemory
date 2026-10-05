@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { createHash } from 'node:crypto'
 import {
   MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, memoryTopicEventFingerprint, StrataGate,
   type EventCard, type MemoryTopicState, type StoredMemoryTopic, type StrataGateSnapshot,
@@ -12,6 +13,7 @@ import type { ResolvedConfig } from '../src/config.js'
 import type { DshModelBridge } from '../src/llm.js'
 import { StrataGateRuntime } from '../src/runtime.js'
 import { handleAdminRequest, type WebResponse } from '../src/web.js'
+import { memoryTopicSectionKey } from '../src/topics.js'
 
 const namespace = 'dsh:project:topic-directory'
 const now = '2026-10-03T00:00:00.000Z'
@@ -90,6 +92,14 @@ async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GE
 }
 
 describe('read-only Topic Directory admin data', () => {
+  it('invalidates a prerelease paragraph-view ETag without changing the package or database version', async () => {
+    const runtime = fakeRuntime(emptySnapshot())
+    const current = await request(runtime, 'dashboard')
+    const oldEtag = `"${createHash('sha256').update(`${current.body.overview.pluginVersion}\0${namespace}:5\0${namespace}\0\0${1}`).digest('base64url').slice(0, 24)}"`
+    expect((await request(runtime, 'dashboard', 'GET', { 'if-none-match': oldEtag })).status).toBe(200)
+    expect((await request(runtime, 'dashboard', 'GET', { 'if-none-match': current.headers.ETag! })).status).toBe(304)
+  })
+
   it('queues only a selected current visible failure through POST and rejects stale or hidden retries', async () => {
     const snapshot = emptySnapshot()
     snapshot.events = [event('history')]
@@ -162,7 +172,7 @@ describe('read-only Topic Directory admin data', () => {
     expect(JSON.stringify(snapshot)).toBe(before)
     const separate = await request(fakeRuntime(snapshot))
     expect(separate.body).toEqual({ namespace, ...directory })
-    const page = await request(fakeRuntime(snapshot), 'topic-events&topicId=topic-b&sectionKey=history:0')
+    const page = await request(fakeRuntime(snapshot), `topic-events&topicId=topic-b&sectionKey=${memoryTopicSectionKey('发展脉络')}`)
     expect(page.body).toMatchObject({
       revision: directory.revision, total: 20, offset: 0, limit: 9, nextOffset: 9,
     })
@@ -271,14 +281,14 @@ describe('read-only Topic Directory admin data', () => {
     expect((await request(runtime, `topic-events&topicId=chapter&expectedRevision=${second.revision}`)).body.items.map((item: { id: string }) => item.id)).toEqual(['member-b', 'member-a'])
   })
 
-  it('retains source order for sections, uncovered members and duplicate-kind occurrences', async () => {
+  it('retains source order for distinct sections of the same kind and uncovered members', async () => {
     const snapshot = emptySnapshot()
     snapshot.events = Array.from({ length: 15 }, (_, index) => event(`event-${index}`))
     const sources = [snapshot.events[9]!, snapshot.events[1]!, snapshot.events[13]!, ...snapshot.events.filter((_event, index) => ![9, 1, 13].includes(index))]
     const stored = topic('chapter', sources)
     stored.overview = [
       { kind: 'history', text: '第一段脉络', sourceEventIds: sources.slice(0, 8).map(({ id }) => id) },
-      { kind: 'history', text: '第二段脉络', sourceEventIds: [sources[8]!.id] },
+      { kind: 'history', title: '后续进展', text: '第二段脉络', sourceEventIds: [sources[8]!.id] },
     ]
     snapshot.memoryTopicState = freeze(snapshot.events)
     snapshot.memoryTopicState.topics = [stored]
@@ -286,10 +296,10 @@ describe('read-only Topic Directory admin data', () => {
     const runtime = fakeRuntime(snapshot)
     const members = await request(runtime, 'topic-events&topicId=chapter')
     expect(members.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(0, 9).map(({ id }) => id))
-    const first = await request(runtime, 'topic-events&topicId=chapter&sectionKey=history:0')
+    const first = await request(runtime, `topic-events&topicId=chapter&sectionKey=${memoryTopicSectionKey('发展脉络')}`)
     expect(first.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(0, 8).map(({ id }) => id))
     expect(first.body.nextOffset).toBeNull()
-    const second = await request(runtime, 'topic-events&topicId=chapter&sectionKey=history:1')
+    const second = await request(runtime, `topic-events&topicId=chapter&sectionKey=${memoryTopicSectionKey('后续进展')}`)
     expect(second.body.items.map((item: { id: string }) => item.id)).toEqual([sources[8]!.id])
     const uncovered = await request(runtime, 'topic-events&topicId=chapter&sectionKey=uncovered')
     expect(uncovered.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(9).map(({ id }) => id))
@@ -297,6 +307,45 @@ describe('read-only Topic Directory admin data', () => {
     expect(later.body.items.map((item: { id: string }) => item.id)).toEqual(sources.slice(9).map(({ id }) => id))
     expect(later.body.nextOffset).toBeNull()
     expect((await request(runtime, 'topic-events&topicId=chapter&sectionKey=history:2')).status).toBe(404)
+  })
+
+  it('groups normalized section titles across kinds and pages the deduplicated source union', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = Array.from({ length: 16 }, (_, index) => event(`event-${index}`))
+    const stored = topic('chapter', snapshot.events)
+    const ids = snapshot.events.map(({ id }) => id)
+    stored.overview = [
+      { kind: 'history', title: 'UI  Design', text: '原始设计段落', sourceEventIds: ids.slice(0, 8) },
+      { kind: 'history', title: 'DSH 兼容', text: '另一个事项', sourceEventIds: [ids[15]!] },
+      { kind: 'decision', title: 'ｕｉ design', text: '后来新增的决定', sourceEventIds: ids.slice(7, 15) },
+    ]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.topics = [stored]
+    snapshot.memoryTopicState.projectedVersions = versions(snapshot.events)
+    const before = JSON.stringify(snapshot)
+    const runtime = fakeRuntime(snapshot)
+    const directory = (await request(runtime)).body
+    const sections = directory.topics[0].sections
+    expect(sections.map((section: { title: string }) => section.title)).toEqual(['UI  Design', 'DSH 兼容'])
+    expect(sections[0].sourceEventCount).toBe(15)
+    expect(sections[0].paragraphs).toEqual([
+      { kind: 'history', title: 'UI  Design', text: '原始设计段落', sourceEventCount: 8 },
+      { kind: 'decision', title: 'ｕｉ design', text: '后来新增的决定', sourceEventCount: 8 },
+    ])
+    expect(JSON.stringify(directory)).not.toContain('sourceEventIds')
+    const query = `topic-events&topicId=chapter&sectionKey=${sections[0].key}&expectedRevision=${directory.revision}`
+    const first = (await request(runtime, query)).body
+    const second = (await request(runtime, query + '&offset=9')).body
+    expect(first).toMatchObject({ total: 15, nextOffset: 9 })
+    expect(second).toMatchObject({ total: 15, nextOffset: null })
+    expect([...first.items, ...second.items].map(({ id }: { id: string }) => id)).toEqual(ids.slice(0, 15))
+    expect(JSON.stringify(snapshot)).toBe(before)
+    // Paragraph changes retain section identity but invalidate page caches.
+    stored.overview[2]!.text = '更新后的决定'
+    const updated = (await request(runtime)).body
+    expect(updated.topics[0].sections[0].key).toBe(sections[0].key)
+    expect(updated.revision).not.toBe(directory.revision)
+    expect((await request(runtime, query)).status).toBe(409)
   })
 
   it('keeps pending ordering predictable by creation time and ID', async () => {

@@ -2092,8 +2092,6 @@ window.__ModuleLoader__.load({
         h(EventDetailPanel, { event: preview.event, nodes, events, onNode, openSource })) : null)
     }
 
-    const TOPIC_SECTION_TITLES = { history: '发展脉络', decision: '关键设计决策', change: '重要变化', 'open-question': '尚未解决的问题', scope: '主题范围' }
-
     function chapterOrdinal(value) {
       const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
       if (value < 10) return digits[value]
@@ -2101,24 +2099,10 @@ window.__ModuleLoader__.load({
       return String(value)
     }
 
-    // Overview has no persisted identity. Kind + occurrence keeps an existing
-    // section open when its text or source list changes in a dashboard refresh.
+    // The server supplies canonical sections and their deduplicated counts.
+    // Title identity stays stable as paragraphs and their sources accumulate.
     function topicSections(topic) {
-      const occurrences = new Map()
-      const totals = new Map()
-      for (const part of topic.overview || []) {
-        const label = part.title || TOPIC_SECTION_TITLES[part.kind] || '主题概览'
-        totals.set(label, (totals.get(label) || 0) + 1)
-      }
-      const labelOccurrences = new Map()
-      return (topic.overview || []).map((part) => {
-        const occurrence = occurrences.get(part.kind) || 0
-        occurrences.set(part.kind, occurrence + 1)
-        const title = part.title || TOPIC_SECTION_TITLES[part.kind] || '主题概览'
-        const labelOccurrence = labelOccurrences.get(title) || 0
-        labelOccurrences.set(title, labelOccurrence + 1)
-        return { ...part, uiKey: String(part.kind) + ':' + occurrence, uiTitle: title + (totals.get(title) > 1 ? '（' + chapterOrdinal(labelOccurrence + 1) + '）' : '') }
-      })
+      return (topic.sections || []).map((section) => ({ ...section, uiKey: section.key, uiTitle: section.title }))
     }
 
     function directoryScrollAction(saved, section, namespace, viewName) {
@@ -2225,7 +2209,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sg-directory-number' }, sectionNumber), h('span', null, part.uiTitle), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
         h(DirectoryFold, { open, id: regionId }, h('div', { className: 'sg-topic-section-body' },
           h('div', { className: 'sg-topic-overview' }, h('h4', { className: 'sg-topic-overview-heading' }, h('button', { type: 'button', className: 'sg-topic-overview-toggle', 'aria-expanded': overviewOpen, 'aria-controls': regionId + '-overview', onClick: () => setOverviewOpen((current) => !current) }, h('span', { className: 'sg-directory-number' }, sectionNumber + '.0'), h('span', null, '总览'), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
-            h(DirectoryFold, { open: overviewOpen, id: regionId + '-overview' }, h('p', { className: 'sg-topic-overview-text' }, part.text || '暂无总览'))),
+            h(DirectoryFold, { open: overviewOpen, id: regionId + '-overview' }, (part.paragraphs || []).map((paragraph, paragraphIndex) => h('p', { key: paragraphIndex, className: 'sg-topic-overview-text', 'data-overview-paragraph-index': String(paragraphIndex) }, paragraph.text || '暂无总览')))),
           h(TopicEventList, { namespace, revision, topicId, sectionKey: part.uiKey, total: sourceCount, active: active && open, openEvent, numberPrefix: sectionNumber, onDirectoryChanged }))))
     }
 
@@ -2240,7 +2224,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'sg-topic-chapter-copy' }, h('h2', null, h('button', { type: 'button', className: 'sg-topic-chapter-toggle', title: topic.title, 'aria-expanded': open, 'aria-controls': regionId, 'aria-label': chapterLabel + ' ' + topic.title, onClick: () => setOpen((current) => !current) }, h('span', { className: 'sg-topic-chapter-label' }, chapterLabel), h('span', { className: 'sg-topic-chapter-title' }, topic.title), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))), topic.description ? h('p', { className: 'sg-topic-description' }, topic.description) : null)),
         h(DirectoryFold, { open, id: regionId }, h('div', { className: 'sg-topic-sections' },
           topicSections(topic).map((part, index) => h(TopicSection, { key: part.uiKey, part, chapter: number, index: index + 1, topicId: topic.id, namespace, revision, active: active && open, openEvent, onDirectoryChanged })),
-          !(topic.overview || []).length ? h('p', { className: 'sg-topic-no-overview' }, '这个主题暂无总览，可查看关联事件。') : null,
+          !(topic.sections || []).length ? h('p', { className: 'sg-topic-no-overview' }, '这个主题暂无总览，可查看关联事件。') : null,
           (() => {
             const remaining = Number(topic.coverage?.omittedEvents || 0)
             return remaining ? h('details', { className: 'sg-topic-other-events', open: otherOpen, onToggle: (event) => setOtherOpen(event.currentTarget.open) }, h('summary', null, '其他关联事件 · ' + remaining), h(TopicEventList, { namespace, revision, topicId: topic.id, sectionKey: 'uncovered', total: remaining, active: active && open && otherOpen, openEvent, onDirectoryChanged })) : null

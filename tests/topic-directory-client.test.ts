@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
+import { memoryTopicSections, memoryTopicSectionNavigation, memoryTopicSectionKey } from '../src/topics.js'
 
 type Element = { type: string | ((props: any) => Element); props: any; children: any[] }
 type Rendered = { type: string; props: any; children: Rendered[]; text: string; visible: boolean }
@@ -75,8 +76,7 @@ function clientRenderer(runEffects = false, fetchOverride?: any) {
         const summarized = new Set(topic.overview.flatMap((part) => part.sourceEventIds))
         ids = topic.sourceEventIds.filter((id) => !summarized.has(id))
       } else {
-        const [kind, occurrence] = sectionKey.split(':')
-        ids = topic.overview.filter((part) => part.kind === kind)[Number(occurrence)]?.sourceEventIds || []
+        ids = memoryTopicSections(topic as any).find((section) => section.key === sectionKey)?.sourceEventIds || []
       }
     }
     const offset = Number(params.get('offset'))
@@ -106,6 +106,7 @@ function clientRenderer(runEffects = false, fetchOverride?: any) {
       return { ...navigation,
         coverage: ids ? { totalEvents: ids.length, summarizedEvents: ids.filter((id) => summarized.has(id)).length, omittedEvents: ids.filter((id) => !summarized.has(id)).length } : topic.coverage,
         overview: overview.map(({ sourceEventIds: references, ...part }: any) => ({ ...part, sourceEventCount: references ? new Set(references).size : part.sourceEventCount })),
+        sections: topic.sections || memoryTopicSectionNavigation({ overview, sourceEventIds: sourceEventIds || [] }),
       }
     }), bootstrap: directory.bootstrap ? { ...directory.bootstrap, failures: directory.bootstrap.failures.map(({ eventIds, ...failure }: any) => ({ ...failure, eventCount: eventIds ? new Set(eventIds).size : failure.eventCount })) } : null }
     directoryViews.set(directory, { fingerprint, view })
@@ -177,15 +178,17 @@ function pageReply(url: string, items: any[], total: number, nextOffset: number 
 }
 
 describe('Topic Directory client interactions', () => {
-  it('shows concrete section names under a broad chapter without changing page scope keys', () => {
+  it('groups same-named paragraphs of different kinds into stable named sections', () => {
     const client = clientRenderer()
-    const sections = client.topicSections({ overview: [
-      { kind: 'history', title: '界面与交互', text: 'UI 历史' },
-      { kind: 'history', title: 'DSH 兼容', text: '兼容性历史' },
-      { kind: 'decision', title: '界面与交互', text: 'UI 决定' },
-    ] })
-    expect(sections.map((section: any) => section.uiTitle)).toEqual(['界面与交互（一）', 'DSH 兼容', '界面与交互（二）'])
-    expect(sections.map((section: any) => section.uiKey)).toEqual(['history:0', 'history:1', 'decision:0'])
+    const sections = client.topicSections({ sections: memoryTopicSectionNavigation({ sourceEventIds: ['E1', 'E2'], overview: [
+      { kind: 'history', title: '界面与交互', text: 'UI 历史', sourceEventIds: ['E1'] },
+      { kind: 'history', title: 'DSH 兼容', text: '兼容性历史', sourceEventIds: ['E2'] },
+      { kind: 'decision', title: '界面与交互', text: 'UI 决定', sourceEventIds: ['E1', 'E2'] },
+    ] }) })
+    expect(sections.map((section: any) => section.uiTitle)).toEqual(['界面与交互', 'DSH 兼容'])
+    expect(sections.map((section: any) => section.uiKey)).toEqual([memoryTopicSectionKey('界面与交互'), memoryTopicSectionKey('DSH 兼容')])
+    expect(sections[0].sourceEventCount).toBe(2)
+    expect(sections[0].paragraphs.map((part: any) => part.text)).toEqual(['UI 历史', 'UI 决定'])
   })
 
   it('posts the selected failed batch once and refreshes only after it is queued', async () => {
@@ -259,6 +262,7 @@ describe('Topic Directory client interactions', () => {
       id: 'large-topic', title: '大型正式主题', description: '完整关系仅在服务端',
       coverage: { totalEvents: 10_000, summarizedEvents: 8, omittedEvents: 9_992 },
       overview: [{ kind: 'history', text: '八条事件总览', sourceEventCount: 8 }],
+      sections: [{ key: memoryTopicSectionKey('发展脉络'), title: '发展脉络', sourceEventCount: 8, paragraphs: [{ kind: 'history', text: '八条事件总览', sourceEventCount: 8 }] }],
     }] }
     const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() }
     let tree = client.render(client.TopicDirectory, props)
@@ -317,15 +321,15 @@ describe('Topic Directory client interactions', () => {
     expect(client.fetch.mock.calls[3]![1].headers['If-None-Match']).toBe('etag-B')
   })
 
-  it('uses friendly occurrence titles only when a kind repeats and preserves server chapter order', () => {
+  it('groups repeated unnamed kinds into one section and preserves server chapter order', () => {
     const client = clientRenderer()
     const directory = fixture()
     directory.topics[0]!.overview.push({ kind: 'history', text: '另一段发展脉络', sourceEventIds: ['event-26'] })
     directory.topics[0]!.sourceEventIds.push('event-26')
     directory.topics[1]!.id = 'topic-0'
     const tree = client.render(client.TopicDirectory, { directory, namespace: 'dsh:project:test', openEvent: vi.fn() })
-    expect(buttons(tree, '1.1发展脉络（一）›')).toHaveLength(1)
-    expect(buttons(tree, '1.3发展脉络（二）›')).toHaveLength(1)
+    expect(buttons(tree, '1.1发展脉络›')).toHaveLength(1)
+    expect(buttons(tree).some((node) => node.text.includes('（二）'))).toBe(false)
     expect(buttons(tree, '1.2关键设计决策›')).toHaveLength(1)
     expect(find(tree, (node) => node.props.className === 'sg-topic-chapter').map((node) => node.props['data-topic-id'])).toEqual(['topic-a', 'topic-0'])
   })
@@ -360,6 +364,7 @@ describe('Topic Directory client interactions', () => {
     expect(buttons(tree).some((node) => node.props['data-topic-event-id'] === 'event-1')).toBe(true)
     props.directory = { ...fixture(), revision: 'revision-2' }
     props.directory.topics[0]!.overview[0].sourceEventIds = ['event-25']
+    props.directory.topics[0]!.sourceEventIds.push('event-25')
     tree = client.render(client.TopicDirectory, props)
     expect(buttons(tree).filter((node) => node.props['data-topic-event-id'])).toHaveLength(0)
     await client.flush()
@@ -379,6 +384,7 @@ describe('Topic Directory client interactions', () => {
     props.namespace = 'dsh:project:new'
     props.directory = { ...fixture(), revision: 'revision-new' }
     props.directory.topics[0]!.overview[0].sourceEventIds = ['event-25']
+    props.directory.topics[0]!.sourceEventIds.push('event-25')
     tree = client.render(client.TopicDirectory, props)
     expect(pending[0]!.signal.aborted).toBe(true)
     expect(pending).toHaveLength(2)
@@ -646,7 +652,37 @@ describe('Topic Directory client interactions', () => {
     expect(rows.at(-1)!.text).toBe('1.1.8历史事件 8↗')
     expect(buttons(first, '还有 3 条事件 · 展开全部')).toHaveLength(0)
     expect(client.fetch).toHaveBeenCalledTimes(1)
-    expect(new URL(client.fetch.mock.calls[0]![0], 'http://localhost').searchParams.get('sectionKey')).toBe('history:0')
+    expect(new URL(client.fetch.mock.calls[0]![0], 'http://localhost').searchParams.get('sectionKey')).toBe(memoryTopicSectionKey('发展脉络'))
+  })
+
+  it('renders one .0 with two independent paragraphs and pages their unique Event union', async () => {
+    const client = clientRenderer(true)
+    const directory = fixture()
+    const chapter = directory.topics[0]!
+    chapter.overview = [
+      { kind: 'history', title: '界面与交互', text: '早期界面设计', sourceEventIds: eventFixture().slice(0, 8).map(({ id }) => id) },
+      { kind: 'decision', title: '界面与交互', text: '后续界面决定', sourceEventIds: eventFixture().slice(7, 15).map(({ id }) => id) },
+    ]
+    chapter.sourceEventIds = eventFixture().slice(0, 15).map(({ id }) => id)
+    const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() }
+    let tree = client.render(client.TopicDirectory, props)
+    expect(buttons(tree, '1.1界面与交互›')).toHaveLength(1)
+    expect(client.fetch).toHaveBeenCalledTimes(0)
+    buttons(tree, '1.1界面与交互›')[0]!.props.onClick()
+    client.render(client.TopicDirectory, props)
+    await client.flush()
+    tree = client.render(client.TopicDirectory, props)
+    expect(buttons(tree, '1.1.0总览›')).toHaveLength(1)
+    expect(find(tree, (node) => node.visible && node.props.className === 'sg-topic-overview-text').map(({ text }) => text)).toEqual(['早期界面设计', '后续界面决定'])
+    expect(buttons(tree).filter((node) => node.props['data-topic-event-id'])).toHaveLength(9)
+    buttons(tree, '还有 6 条事件 · 展开全部')[0]!.props.onClick()
+    client.render(client.TopicDirectory, props)
+    await client.flush()
+    tree = client.render(client.TopicDirectory, props)
+    const rows = buttons(tree).filter((node) => node.props['data-topic-event-id'])
+    expect(rows.map((node) => node.props['data-topic-event-id'])).toEqual(chapter.sourceEventIds)
+    expect(rows.at(-1)!.text).toBe('1.1.15历史事件 15↗')
+    expect(client.fetch.mock.calls.map((call: any[]) => new URL(call[0], 'http://localhost').searchParams.get('offset'))).toEqual(['0', '9'])
   })
 
   it('limits a large section to .0 + nine events, pages the rest only on request, and reuses its cache and Event callback', async () => {
@@ -698,8 +734,8 @@ describe('Topic Directory client interactions', () => {
     tree = client.render(client.TopicDirectory, { ...props, directory: updated.directory })
     expect(buttons(tree, '1.1发展脉络›')[0]!.props['aria-expanded']).toBe(true)
     expect(buttons(tree, '1.1.0总览›')[0]!.props['aria-expanded']).toBe(false)
-    const oldParts = client.topicSections(props.directory.topics[0]!)
-    const newParts = client.topicSections(updated.directory.topics[0]!)
+    const oldParts = client.topicSections({ sections: memoryTopicSectionNavigation(props.directory.topics[0]! as any) })
+    const newParts = client.topicSections({ sections: memoryTopicSectionNavigation(updated.directory.topics[0]! as any) })
     expect(oldParts.map((part: any) => part.uiKey)).toEqual(newParts.map((part: any) => part.uiKey))
   })
 
