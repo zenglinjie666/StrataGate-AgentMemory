@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest'
 import * as plugin from '../src/index.js'
 
 describe('DSH plugin composition', () => {
-  it('restores independent locations after restart and injects them into a new weather session without retrieval', async () => {
+  it('persists a temporary current city until updated or cleared and injects new weather sessions without retrieval', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-dsh-location-profile-'))
     const mount = async () => {
       const ctx = new Context()
@@ -34,8 +34,10 @@ describe('DSH plugin composition', () => {
       const update = ctx.tools.get('memory_profile_update')!
       expect(update.description).toContain('两个字段独立')
       expect(update.description).toContain('一次旅行或当前临时位置不能自动覆盖稳定字段')
+      expect(update.description).toContain('保存到用户下次修改或清空为止，不自动过期')
+      expect(update.description).toContain('更新 currentCity，不修改 defaultLocation 或 homeCity')
       expect(update.description).toContain('只有用户紧接着明确回复“同意”')
-      for (const [field, value] of [['defaultLocation', '广州天河'], ['homeCity', '深圳']] as const) {
+      for (const [field, value] of [['defaultLocation', '广州天河'], ['homeCity', '深圳'], ['currentCity', '杭州']] as const) {
         expect(await update.execute({ field, value }, { agent: { session }, callId: field } as never)).toMatchObject({ field, value, modified: true })
       }
       await ctx.fiber.dispose()
@@ -45,8 +47,25 @@ describe('DSH plugin composition', () => {
       const profile = prompt.contexts.find(({ name }) => name === 'stratagate:persistent-profile')?.text
       expect(profile).toContain('Default location (when the task specifies no location): 广州天河')
       expect(profile).toContain('Usual city of residence: 深圳')
+      expect(profile).toContain('Current city (until updated or cleared): 杭州')
+      expect(profile).toContain('otherwise use Current city when set, then Default location')
+      expect(profile).toContain('persists across sessions until the user updates or clears it')
       expect(profile).toContain('It does not imply residence or current whereabouts.')
       expect(profile).toContain('Do not infer or overwrite either field from a trip.')
+      const restartedUpdate = ctx.tools.get('memory_profile_update')!
+      expect(await restartedUpdate.execute({ field: 'currentCity', value: '上海' }, { agent: { session: newSession }, callId: 'move-city' } as never)).toMatchObject({ modified: true })
+      const moved = await ctx.systemPrompt.assemble({ agent: { session: newSession } as Agent })
+      const movedProfile = moved.contexts.find(({ name }) => name === 'stratagate:persistent-profile')?.text
+      expect(movedProfile).toContain('Current city (until updated or cleared): 上海')
+      expect(movedProfile).not.toContain('Current city (until updated or cleared): 杭州')
+      expect(await restartedUpdate.execute({ field: 'currentCity', value: '' }, { agent: { session: newSession }, callId: 'clear-city' } as never)).toMatchObject({ modified: true })
+      await ctx.fiber.dispose()
+      ctx = await mount()
+      const cleared = await ctx.systemPrompt.assemble({ agent: { session: newSession } as Agent })
+      const clearedProfile = cleared.contexts.find(({ name }) => name === 'stratagate:persistent-profile')?.text
+      expect(clearedProfile).not.toContain('Current city (until updated or cleared):')
+      expect(clearedProfile).toContain('Default location (when the task specifies no location): 广州天河')
+      expect(clearedProfile).toContain('Usual city of residence: 深圳')
     } finally {
       await ctx?.fiber.dispose()
       await rm(directory, { recursive: true, force: true })
@@ -253,6 +272,7 @@ Memory writing:
 - Choose by scope rather than the word "remember": memory_profile_update is for always-on global Profile fields supplied to future conversations without retrieval; memory_remember is for durable information that should surface when relevant; information that matters only to the current turn needs neither. Store the same information in one place by default.
 - Use memory_profile_update only for information that belongs in a Profile field. Explicit user requests may be applied directly; inferred changes must follow the tool's consent rule. Final-answer language and visible-reasoning language are independent fields. Do not use memory_remember to bypass Profile consent.
 - Stable default location (defaultLocation: reference for weather, nearby services, or local recommendations when no location is specified) and usual city of residence (homeCity) belong preferentially in the always-on Profile. They are independent: do not infer either from the other or from a current/temporary location or a trip. Temporary travel must not automatically overwrite these stable fields. Follow the same Profile consent rule.
+- Current city (currentCity) also belongs in the always-on Profile. Travel or business-trip location can be temporary while its saved value persists across sessions until the user updates or clears it; do not expire it automatically. A user request to remember their current trip city belongs here, not in retrieval-dependent memory_remember. Future trip plans, completed trips, and historical locations do not establish current whereabouts. Never copy currentCity into defaultLocation or homeCity. For local tasks use an explicit task location first, otherwise currentCity when set, then defaultLocation. Follow the same Profile consent rule for updates and clearing.
 - Use memory_remember for durable project facts, past decisions, corrections, experiences, and context-specific preferences. Record one self-contained, grounded fact per call, with necessary project, time, and scope. Never record speculation, secrets, credentials, or transient task state.`
       expect(memoryProtocol).toBe(expectedMemoryProtocol)
       for (const toolDetail of [

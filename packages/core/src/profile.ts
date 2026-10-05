@@ -6,6 +6,7 @@ export const PROFILE_FIELDS = {
   reasoningLanguage: { label: 'Preferred visible reasoning language', maxLength: 100 },
   defaultLocation: { label: 'Default location (when the task specifies no location)', maxLength: 200 },
   homeCity: { label: 'Usual city of residence', maxLength: 100 },
+  currentCity: { label: 'Current city (until updated or cleared)', maxLength: 100 },
   responsePreferences: { label: 'Response preferences', maxLength: 1000 },
   standingInstructions: { label: 'Standing instructions', maxLength: 1000 },
   userBackground: { label: 'User background', maxLength: 1500 },
@@ -15,7 +16,7 @@ export const PROFILE_FIELDS = {
 
 export type ProfileField = keyof typeof PROFILE_FIELDS;
 export type PersistentProfile = Record<ProfileField, string>;
-export const PROFILE_PROTECTED_SHORT_FIELDS = ['userPreferredName', 'assistantPreferredName', 'preferredLanguage', 'reasoningLanguage', 'defaultLocation', 'homeCity'] as const satisfies readonly ProfileField[];
+export const PROFILE_PROTECTED_SHORT_FIELDS = ['userPreferredName', 'assistantPreferredName', 'preferredLanguage', 'reasoningLanguage', 'defaultLocation', 'homeCity', 'currentCity'] as const satisfies readonly ProfileField[];
 export type ProfileChangeSource = 'settings' | 'user_explicit' | 'agent_tool' | 'maintenance';
 export interface ProfileChange {
   field: ProfileField;
@@ -70,6 +71,8 @@ export function renderPersistentProfile(profile: PersistentProfile): string | nu
   const fieldGuidance = [
     profile.defaultLocation ? 'Default location is the reference for weather, nearby services, and local recommendations when the user specifies no location. It does not imply residence or current whereabouts.' : null,
     profile.homeCity ? 'Usual city of residence is a stable home city, not a temporary/current location. It is independent of the default location. Do not infer or overwrite either field from a trip.' : null,
+    profile.currentCity ? 'Current city may be a temporary travel or business-trip location, but persists across sessions until the user updates or clears it. Do not expire it automatically or copy it into the default location or usual city of residence.' : null,
+    profile.defaultLocation || profile.currentCity ? 'For weather, nearby services, and local recommendations, use an explicitly specified task location first; otherwise use Current city when set, then Default location. Do not infer current whereabouts from the usual city of residence.' : null,
     profile.preferredLanguage ? '“Preferred answer language” applies to the assistant\'s final/user-facing answer.' : null,
     profile.reasoningLanguage ? '“Preferred visible reasoning language” applies only to reasoning/thinking text that the host UI exposes to the user, when supported. It does not control hidden chain-of-thought.' : null,
     profile.preferredLanguage || profile.reasoningLanguage ? 'These are independent preferences. Do not infer one from the other.' : null,

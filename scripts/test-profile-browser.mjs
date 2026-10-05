@@ -18,6 +18,7 @@ const browser = await chromium.launch({ executablePath: chrome, headless: true }
 const store = new SqliteStorage({ filename: database })
 try {
   store.updateProfileField('reasoningLanguage', '', 'settings')
+  store.updateProfileField('homeCity', '', 'settings')
   const context = await browser.newContext({ viewport: { width: 1280, height: 1400 }, colorScheme: 'dark', locale: 'zh-CN' })
   const page = await context.newPage()
   let profileReads = 0

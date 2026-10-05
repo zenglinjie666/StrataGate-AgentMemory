@@ -106,14 +106,15 @@ function modelBridge(responses: Array<{ text?: string; tool?: unknown; toolName?
 
 describe('DeepSeek Harness model JSON retries', () => {
   it('sends maintenance only the current Profile and rejects added facts in protected fields', async () => {
-    const input = { ...emptyProfile(), preferredLanguage: '中文', reasoningLanguage: 'English', responsePreferences: '简洁。简洁。' }
+    const input = { ...emptyProfile(), preferredLanguage: '中文', reasoningLanguage: 'English', currentCity: '杭州', responsePreferences: '简洁。简洁。' }
     const output = { ...input, responsePreferences: '简洁。' }
     const { bridge, session, calls } = modelBridge([{ tool: output }])
     expect(await bridge.run(session, () => bridge.maintainProfile(input))).toEqual(output)
     const request = calls.mock.calls[0]![0] as { system: string; messages: Array<{ content: Array<{ text: string }> }> }
     expect(request.system).toContain('Never infer or add facts')
-    expect(request.system).toContain('all 11 string fields')
+    expect(request.system).toContain('all 12 string fields')
     expect(request.system).toContain('neither means temporary/current location')
+    expect(request.system).toContain('Never expire currentCity automatically')
     expect(request.system).toContain('never infer, copy, or merge either language field into the other')
     expect(JSON.parse(request.messages[0]!.content[0]!.text)).toEqual({ profile: input, fieldDefinitions: expect.any(Object) })
     expect(bridge.takeSuccessfulResponses()).toEqual([])
@@ -123,10 +124,12 @@ describe('DeepSeek Harness model JSON retries', () => {
     await expect(copied.bridge.run(copied.session, () => copied.bridge.maintainProfile(input))).rejects.toThrow(/protected short field reasoningLanguage/)
     const inferred = modelBridge([{ tool: { ...input, preferredLanguage: 'English' } }, { tool: { ...input, preferredLanguage: 'English' } }])
     await expect(inferred.bridge.run(inferred.session, () => inferred.bridge.maintainProfile(input))).rejects.toThrow(/protected short field preferredLanguage/)
-    for (const field of ['defaultLocation', 'homeCity'] as const) {
+    for (const field of ['defaultLocation', 'homeCity', 'currentCity'] as const) {
       const moved = modelBridge([{ tool: { ...input, [field]: '旅行地点' } }, { tool: { ...input, [field]: '旅行地点' } }])
       await expect(moved.bridge.run(moved.session, () => moved.bridge.maintainProfile(input))).rejects.toThrow(new RegExp(`protected short field ${field}`))
     }
+    const expired = modelBridge([{ tool: { ...input, currentCity: '' } }, { tool: { ...input, currentCity: '' } }])
+    await expect(expired.bridge.run(expired.session, () => expired.bridge.maintainProfile(input))).rejects.toThrow(/protected short field currentCity/)
   })
 
   it('reserves enough output for a full Chinese Profile and retries a truncated response', async () => {

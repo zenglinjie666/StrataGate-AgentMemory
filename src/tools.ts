@@ -21,11 +21,13 @@ function sessionOf(exec: ToolRunContext): Session {
 export function registerMemoryTools(ctx: Context, runtime: StrataGateRuntime): void {
   ctx.tools.register(defineTool({
     name: 'memory_profile_update',
-    description: `This tool is provided by the StrataGate plugin. 修改用户常驻画像中的一个固定字段：用户称呼、助手名字、默认回答语言、思考过程语言、默认地点、常驻城市、回复方式和风格偏好、长期持续生效的要求、稳定的用户背景、长期目标，或其他必须常驻的信息。
+    description: `This tool is provided by the StrataGate plugin. 修改用户常驻画像中的一个固定字段：用户称呼、助手名字、默认回答语言、思考过程语言、常驻/默认地址、当前所在城市、原有常驻城市、回复方式和风格偏好、长期持续生效的要求、稳定的用户背景、长期目标，或其他必须常驻的信息。
 
 这些信息会自动提供给后续每次对话，无需检索。只有确实需要持续放在上下文中的信息，才适合写入画像。
 
 稳定的默认地点（defaultLocation）和常驻城市（homeCity）优先属于 Profile：默认地点是用户未指定地点时，天气、附近服务、本地推荐等任务的默认参考；常驻城市是用户稳定居住或常驻的城市。两个字段独立，不能互相推断，也不代表当前所在地。一次旅行或当前临时位置不能自动覆盖稳定字段；更新地点字段同样遵守下述明确请求或确认授权规则。
+
+当前所在城市（currentCity）也属于 Profile：可以是旅游、出差时的临时城市，但会跨会话持续注入，保存到用户下次修改或清空为止，不自动过期。“临时”描述所在地的性质，不是保存时长。用户要求记住当前旅行/出差城市时，更新 currentCity，不修改 defaultLocation 或 homeCity；计划将来去、已经结束的旅行或历史地点不能当作当前城市。对未指定地点的天气、附近服务、本地推荐等任务，优先参考已设置的 currentCity，空值时再参考 defaultLocation；任务明确指定的地点优先。更新或清空 currentCity 仍遵守同一 Profile 授权规则。
 
 默认回答语言只控制最终面向用户的回答；思考过程语言只控制宿主界面支持时用户可见的思考文本，不控制隐藏推理。两者是独立字段，只修改用户指定的字段。例如“以后都用中文回答我”只修改 preferredLanguage，“以后思考过程用中文”只修改 reasoningLanguage；两者都要求时分别调用两次。
 
@@ -33,7 +35,7 @@ export function registerMemoryTools(ctx: Context, runtime: StrataGateRuntime): v
 
 只需在相关情境中想起的项目事实、经历、决定或偏好，请使用 memory_remember；仅本次有效的要求不写入记忆。不能因为用户说了“记住”就自动选择本工具，也不能在 memory_remember 不可用时把 Event 信息改写成常驻画像。`,
     parameters: {
-      field: { type: 'string', required: true, enum: ['userPreferredName', 'assistantPreferredName', 'preferredLanguage', 'reasoningLanguage', 'defaultLocation', 'homeCity', 'responsePreferences', 'standingInstructions', 'userBackground', 'longTermGoals', 'persistentNotes'] as const },
+      field: { type: 'string', required: true, enum: ['userPreferredName', 'assistantPreferredName', 'preferredLanguage', 'reasoningLanguage', 'defaultLocation', 'homeCity', 'currentCity', 'responsePreferences', 'standingInstructions', 'userBackground', 'longTermGoals', 'persistentNotes'] as const },
       value: { type: 'string', required: true },
     },
     output: jsonOutput,
