@@ -7,14 +7,14 @@ import { emptyProfile, PROFILE_FIELDS, PROFILE_MAINTENANCE_TOTAL_THRESHOLD, PROF
 import { SqliteStorage } from '../src/sqlite.js';
 
 describe('installation-wide Persistent Profile', () => {
-  it('starts with nine empty fields and updates independent language fields across connections and namespaces', async () => {
+  it('starts with eleven empty fields and updates independent language fields across connections and namespaces', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-profile-'));
     const filename = join(directory, 'memory.db');
     try {
       const first = new SqliteStorage({ filename });
       expect(first.getPersistentProfile()).toEqual(emptyProfile());
-      expect(Object.keys(first.getPersistentProfile())).toHaveLength(9);
-      expect(Object.keys(PROFILE_FIELDS)).toHaveLength(9);
+      expect(Object.keys(first.getPersistentProfile())).toHaveLength(11);
+      expect(Object.keys(PROFILE_FIELDS)).toHaveLength(11);
       expect(PROFILE_FIELDS.reasoningLanguage.maxLength).toBe(100);
       expect(PROFILE_TOTAL_MAX_LENGTH).toBe(6000);
       expect(PROFILE_MAINTENANCE_TOTAL_THRESHOLD).toBe(4800);
@@ -63,6 +63,54 @@ describe('installation-wide Persistent Profile', () => {
     expect(both).toContain('It does not control hidden chain-of-thought.');
     expect(rendered).not.toContain('User background:');
     expect(rendered).toContain('It does not override higher-priority system instructions.');
+    const locations = renderPersistentProfile({ ...emptyProfile(), defaultLocation: '广州天河', homeCity: '深圳' });
+    expect(locations).toContain('Default location (when the task specifies no location): 广州天河');
+    expect(locations).toContain('Usual city of residence: 深圳');
+    expect(locations).toContain('It does not imply residence or current whereabouts.');
+    expect(locations).toContain('Do not infer or overwrite either field from a trip.');
+  });
+
+  it('validates location limits, persists revisions, and protects both fields during maintenance', async () => {
+    const store = new SqliteStorage({ filename: ':memory:' });
+    try {
+      store.updateProfileField('defaultLocation', '😀'.repeat(200), 'settings');
+      store.updateProfileField('homeCity', '深'.repeat(100), 'agent_tool');
+      expect(() => store.updateProfileField('defaultLocation', '😀'.repeat(201), 'settings')).toThrow(/200 characters/);
+      expect(() => store.updateProfileField('homeCity', '深'.repeat(101), 'settings')).toThrow(/100 characters/);
+      const snapshot = store.getProfileSnapshot();
+      for (const field of ['defaultLocation', 'homeCity'] as const) {
+        expect(snapshot.revisions[field]).toBeGreaterThan(0);
+        expect(() => store.applyProfileMaintenance(snapshot.profile, { ...snapshot.profile, [field]: '旅行地点' })).toThrow(new RegExp(`protected short field ${field}`));
+        const before = store.getProfileChanges();
+        expect(store.updateProfileField(field, '旧草稿', 'settings', null, snapshot.profile[field], 0)).toMatchObject({ modified: false, conflict: true });
+        expect(store.getProfileChanges()).toEqual(before);
+      }
+    } finally { await store.close(); }
+  });
+
+  it('reads an old nine-field database with empty locations without migrating or losing rows', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-profile-nine-field-'));
+    const filename = join(directory, 'memory.db');
+    try {
+      const first = new SqliteStorage({ filename });
+      const oldFields = Object.keys(PROFILE_FIELDS).filter((field) => !['defaultLocation', 'homeCity'].includes(field));
+      for (const field of oldFields) first.updateProfileField(field, `old-${field}`, 'settings');
+      const oldChanges = first.getProfileChanges();
+      await first.close();
+      const db = new DatabaseSync(filename);
+      const beforeVersion = db.prepare('PRAGMA user_version').get();
+      const beforeRows = db.prepare('SELECT * FROM persistent_profile ORDER BY field').all();
+      db.close();
+      const reopened = new SqliteStorage({ filename });
+      expect(reopened.getPersistentProfile()).toEqual({ ...emptyProfile(), ...Object.fromEntries(oldFields.map((field) => [field, `old-${field}`])) });
+      expect(reopened.getProfileSnapshot().revisions).toMatchObject({ defaultLocation: 0, homeCity: 0 });
+      expect(reopened.getProfileChanges()).toEqual(oldChanges);
+      await reopened.close();
+      const after = new DatabaseSync(filename);
+      expect(after.prepare('PRAGMA user_version').get()).toEqual(beforeVersion);
+      expect(after.prepare('SELECT * FROM persistent_profile ORDER BY field').all()).toEqual(beforeRows);
+      after.close();
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it('triggers maintenance by time or either capacity threshold and records only changed fields', async () => {
@@ -186,13 +234,13 @@ describe('installation-wide Persistent Profile', () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-profile-eight-field-'));
     const filename = join(directory, 'memory.db');
     try {
-      const legacyFields = Object.keys(PROFILE_FIELDS).filter((field) => field !== 'reasoningLanguage');
+      const legacyFields = Object.keys(PROFILE_FIELDS).filter((field) => !['reasoningLanguage', 'defaultLocation', 'homeCity'].includes(field));
       const first = new SqliteStorage({ filename });
       for (const field of legacyFields) first.updateProfileField(field, `old-${field}`, 'settings');
       await first.close();
       const reopened = new SqliteStorage({ filename });
       const profile = reopened.getPersistentProfile();
-      expect(Object.keys(profile)).toHaveLength(9);
+      expect(Object.keys(profile)).toHaveLength(11);
       expect(profile.reasoningLanguage).toBe('');
       for (const field of legacyFields) expect(profile[field as keyof typeof profile]).toBe(`old-${field}`);
       expect(reopened.getProfileSnapshot().revisions.reasoningLanguage).toBe(0);

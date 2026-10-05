@@ -3289,6 +3289,7 @@ window.__ModuleLoader__.load({
     const profileGroups = [
       ['身份与语言', [['userPreferredName', 'StrataGate对你的称呼', 100], ['assistantPreferredName', 'StrataGate的名字', 100], ['preferredLanguage', '默认回答语言', 100], ['reasoningLanguage', '思考过程语言', 100]]],
       ['交互偏好', [['responsePreferences', '回复方式和风格偏好', 1000], ['standingInstructions', '长期持续生效的要求', 1000]]],
+      ['稳定地点', [['defaultLocation', '默认地点（未指定地点时的参考）', 200], ['homeCity', '常驻城市（稳定居住或常驻）', 100]]],
       ['关于用户', [['userBackground', '稳定的用户背景', 1500], ['longTermGoals', '长期目标', 1000]]],
       ['其他', [['persistentNotes', '其他必须常驻的信息', 1200]]],
     ]
@@ -3371,6 +3372,7 @@ window.__ModuleLoader__.load({
           h('p', { className: 'sg-settings-group-copy' }, '总字符 ' + total + ' / 6000'),
           profileGroups.map(([title, fields]) => h('section', { key: title, className: 'sg-profile-group', 'aria-label': title },
             h('h3', null, title),
+            title === '稳定地点' ? h('p', { className: 'sg-settings-group-copy' }, '默认地点用于未指定地点的任务；常驻城市表示稳定居住或常驻。两者独立，不会因旅行或临时所在地自动更改。') : null,
             fields.map(([field, label, maximum]) => {
               const value = profile[field] || ''
               const isEditing = editing?.field === field
@@ -3380,7 +3382,7 @@ window.__ModuleLoader__.load({
               return h('div', { key: field, className: 'sg-profile-row' },
                 h('div', { className: 'sg-profile-summary' }, h('span', { className: 'sg-profile-label' }, label), h('span', { className: 'sg-profile-value ' + (value ? '' : 'empty'), title: value || undefined }, value || '未设置'), h('button', { type: 'button', className: 'sg-profile-action', onClick: () => beginEdit(field), disabled: saving || Boolean(editing) }, value ? '编辑' : '添加')),
                 isEditing ? h('div', { className: 'sg-profile-editor' },
-                  field === 'userPreferredName' || field === 'assistantPreferredName' || field === 'preferredLanguage' || field === 'reasoningLanguage'
+                  field === 'userPreferredName' || field === 'assistantPreferredName' || field === 'preferredLanguage' || field === 'reasoningLanguage' || field === 'defaultLocation' || field === 'homeCity'
                     ? h('input', { id: 'sg-profile-' + field, 'aria-label': label, value: editing.draft, onChange: (event) => setEditing((current) => ({ ...current, draft: event.target.value })) })
                     : h('textarea', { id: 'sg-profile-' + field, 'aria-label': label, value: editing.draft, onChange: (event) => setEditing((current) => ({ ...current, draft: event.target.value })) }),
                   changedElsewhere || conflict ? h('p', { className: 'sg-profile-conflict', role: 'alert' }, '该项刚刚在其他位置更新。', h('button', { type: 'button', className: 'sg-profile-action', onClick: reloadField }, '载入最新内容')) : null,

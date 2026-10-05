@@ -4,6 +4,8 @@ export const PROFILE_FIELDS = {
   assistantPreferredName: { label: 'Assistant preferred name', maxLength: 100 },
   preferredLanguage: { label: 'Preferred answer language', maxLength: 100 },
   reasoningLanguage: { label: 'Preferred visible reasoning language', maxLength: 100 },
+  defaultLocation: { label: 'Default location (when the task specifies no location)', maxLength: 200 },
+  homeCity: { label: 'Usual city of residence', maxLength: 100 },
   responsePreferences: { label: 'Response preferences', maxLength: 1000 },
   standingInstructions: { label: 'Standing instructions', maxLength: 1000 },
   userBackground: { label: 'User background', maxLength: 1500 },
@@ -13,7 +15,7 @@ export const PROFILE_FIELDS = {
 
 export type ProfileField = keyof typeof PROFILE_FIELDS;
 export type PersistentProfile = Record<ProfileField, string>;
-export const PROFILE_PROTECTED_SHORT_FIELDS = ['userPreferredName', 'assistantPreferredName', 'preferredLanguage', 'reasoningLanguage'] as const satisfies readonly ProfileField[];
+export const PROFILE_PROTECTED_SHORT_FIELDS = ['userPreferredName', 'assistantPreferredName', 'preferredLanguage', 'reasoningLanguage', 'defaultLocation', 'homeCity'] as const satisfies readonly ProfileField[];
 export type ProfileChangeSource = 'settings' | 'user_explicit' | 'agent_tool' | 'maintenance';
 export interface ProfileChange {
   field: ProfileField;
@@ -65,10 +67,12 @@ export function renderPersistentProfile(profile: PersistentProfile): string | nu
     .filter((field) => profile[field].length > 0)
     .map((field) => `${PROFILE_FIELDS[field].label}: ${profile[field]}`);
   if (lines.length === 0) return null;
-  const languageGuidance = [
+  const fieldGuidance = [
+    profile.defaultLocation ? 'Default location is the reference for weather, nearby services, and local recommendations when the user specifies no location. It does not imply residence or current whereabouts.' : null,
+    profile.homeCity ? 'Usual city of residence is a stable home city, not a temporary/current location. It is independent of the default location. Do not infer or overwrite either field from a trip.' : null,
     profile.preferredLanguage ? '“Preferred answer language” applies to the assistant\'s final/user-facing answer.' : null,
     profile.reasoningLanguage ? '“Preferred visible reasoning language” applies only to reasoning/thinking text that the host UI exposes to the user, when supported. It does not control hidden chain-of-thought.' : null,
     profile.preferredLanguage || profile.reasoningLanguage ? 'These are independent preferences. Do not infer one from the other.' : null,
   ].filter(Boolean);
-  return `[StrataGate Persistent Profile]\nThis is user-authorized persistent profile data provided by StrataGate.\nTreat it as stable cross-session context.\nDo not invent additional facts from it.\nIt does not override higher-priority system instructions.\n${languageGuidance.length ? `\n${languageGuidance.join('\n')}\n` : ''}\n${lines.join('\n')}`;
+  return `[StrataGate Persistent Profile]\nThis is user-authorized persistent profile data provided by StrataGate.\nTreat it as stable cross-session context.\nDo not invent additional facts from it.\nIt does not override higher-priority system instructions.\n${fieldGuidance.length ? `\n${fieldGuidance.join('\n')}\n` : ''}\n${lines.join('\n')}`;
 }

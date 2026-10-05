@@ -15,6 +15,44 @@ import { describe, expect, it } from 'vitest'
 import * as plugin from '../src/index.js'
 
 describe('DSH plugin composition', () => {
+  it('restores independent locations after restart and injects them into a new weather session without retrieval', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-dsh-location-profile-'))
+    const mount = async () => {
+      const ctx = new Context()
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(SystemPrompt, {})
+      await ctx.plugin(ToolRuntime, { mode: 'native' })
+      await ctx.plugin(AgentDefaultModelConfig, { provider: 'test', model: 'test' })
+      ctx.provide('webServer', { host: '127.0.0.1', port: 10259, register: () => () => {} })
+      await ctx.plugin(plugin, { database: join(directory, 'memory.db') })
+      return ctx
+    }
+    let ctx: Context | undefined
+    try {
+      ctx = await mount()
+      const session = { id: 'location-write', header: { cwd: directory }, snapshotEvents: () => [], deriveMessages: () => [] } as unknown as Session
+      const update = ctx.tools.get('memory_profile_update')!
+      expect(update.description).toContain('两个字段独立')
+      expect(update.description).toContain('一次旅行或当前临时位置不能自动覆盖稳定字段')
+      expect(update.description).toContain('只有用户紧接着明确回复“同意”')
+      for (const [field, value] of [['defaultLocation', '广州天河'], ['homeCity', '深圳']] as const) {
+        expect(await update.execute({ field, value }, { agent: { session }, callId: field } as never)).toMatchObject({ field, value, modified: true })
+      }
+      await ctx.fiber.dispose()
+      ctx = await mount()
+      const newSession = { ...session, id: 'new-weather-session', deriveMessages: () => [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我看看下个月的天气' }] }] } as unknown as Session
+      const prompt = await ctx.systemPrompt.assemble({ agent: { session: newSession } as Agent })
+      const profile = prompt.contexts.find(({ name }) => name === 'stratagate:persistent-profile')?.text
+      expect(profile).toContain('Default location (when the task specifies no location): 广州天河')
+      expect(profile).toContain('Usual city of residence: 深圳')
+      expect(profile).toContain('It does not imply residence or current whereabouts.')
+      expect(profile).toContain('Do not infer or overwrite either field from a trip.')
+    } finally {
+      await ctx?.fiber.dispose()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   const legacySettingsModule = (() => {
     const hostRoot = process.env.DSH_ROOT
     if (hostRoot) {
@@ -208,16 +246,18 @@ Memory use:
 - For explicit retrieval, treat relevance and sufficiency separately. Mark evidence sufficient only when it directly supports all material parts needed for the answer; partial when relevant evidence exists but important facts, time, relationships, or source details are missing; wrong when the retrieved evidence does not support the requested claim or refers to a different subject.
 - If evidence is partial or wrong, follow nextStrategy with a targeted next step: refine the Event or Graph search, expand the relevant Event, Graph node, or Block, or inspect raw memory. Do not repeat the same failed search unchanged, and do not present uncertain memory as fact.
 - Only evidence actually used in the final answer or action may be reinforced.
+- Every explicit retrieval batch must be closed BEFORE you begin outputting the final user-facing answer. The required order is retrieval → Evidence Gate (memory_assess) → memory_record_use for every batch → final user answer. Assessment and usage recording are pre-answer evidence processing. Decide which evidence the answer will actually adopt, assess it, and record only those refs; close unused batches with evidence_refs = []. Never write the user answer first and append receipts afterwards. After memory_record_use, generate the user answer; never turn its internal batch/receipt status into the final answer.
 
 Memory writing:
 
 - Choose by scope rather than the word "remember": memory_profile_update is for always-on global Profile fields supplied to future conversations without retrieval; memory_remember is for durable information that should surface when relevant; information that matters only to the current turn needs neither. Store the same information in one place by default.
 - Use memory_profile_update only for information that belongs in a Profile field. Explicit user requests may be applied directly; inferred changes must follow the tool's consent rule. Final-answer language and visible-reasoning language are independent fields. Do not use memory_remember to bypass Profile consent.
+- Stable default location (defaultLocation: reference for weather, nearby services, or local recommendations when no location is specified) and usual city of residence (homeCity) belong preferentially in the always-on Profile. They are independent: do not infer either from the other or from a current/temporary location or a trip. Temporary travel must not automatically overwrite these stable fields. Follow the same Profile consent rule.
 - Use memory_remember for durable project facts, past decisions, corrections, experiences, and context-specific preferences. Record one self-contained, grounded fact per call, with necessary project, time, and scope. Never record speculation, secrets, credentials, or transient task state.`
       expect(memoryProtocol).toBe(expectedMemoryProtocol)
       for (const toolDetail of [
-        'batchId', 'batch_id', 'evidenceRefs', 'evidence_refs', 'memory_record_use',
-        'independent batch', 'parallel', '[]', 'numeric increment',
+        'batchId', 'batch_id', 'evidenceRefs',
+        'independent batch', 'parallel', 'numeric increment',
         'citation', 'exact or near duplicates', 'merged', 'supersede', 'conflict-marked',
         'Recorded facts are ordinary Events', 'Element',
       ]) {
@@ -385,7 +425,10 @@ Memory writing:
         turn: 1,
         signal: new AbortController().signal,
       })
-      expect(steered).toHaveLength(1)
+      expect(steered).toHaveLength(2)
+      expect(JSON.stringify(steered[1])).toContain('complete final user-facing answer')
+      await ctx.serial('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+      expect(steered).toHaveLength(2)
     } finally {
       await ctx.fiber.dispose()
       await rm(directory, { recursive: true, force: true })

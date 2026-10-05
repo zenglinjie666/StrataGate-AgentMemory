@@ -273,7 +273,7 @@ const STRUCTURED_TOOLS = {
   },
   profileMaintenance: {
     name: 'stratagate_maintain_profile',
-    description: 'Return the same nine Persistent Profile fields with only safe wording and redundancy cleanup; preserve the four short fields apart from necessary whitespace cleanup.',
+    description: `Return the same ${Object.keys(PROFILE_FIELDS).length} Persistent Profile fields with only safe wording and redundancy cleanup; preserve ${PROFILE_PROTECTED_SHORT_FIELDS.join(', ')} apart from necessary whitespace cleanup. Default location and usual city of residence are independent stable fields, not temporary/current location.`,
     parameters: PROFILE_MAINTENANCE_PARAMETERS,
   },
 } as const
@@ -597,7 +597,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
 
   async maintainProfile(profile: PersistentProfile): Promise<PersistentProfile> {
     const raw = object(await this.callStructured('profileMaintenance',
-      `You maintain only the supplied StrataGate Persistent Profile. Call ${STRUCTURED_TOOLS.profileMaintenance.name} exactly once with all nine string fields. You may deduplicate, merge repeated meaning, shorten redundant wording, and improve organization. Preserve every unique fact, uncertainty, constraint, and instruction. Never infer or add facts, broaden meaning, or read Event, Graph, or conversation history. If two statements might conflict or cannot safely merge, retain both. Keep userPreferredName, assistantPreferredName, preferredLanguage, and reasoningLanguage unchanged except necessary whitespace cleanup. preferredLanguage and reasoningLanguage are independent: never infer, copy, or merge either language field into the other. reasoningLanguage is only for user-visible reasoning/thinking text when supported, not hidden chain-of-thought. Character limits (Unicode code points): ${JSON.stringify(Object.fromEntries(Object.entries(PROFILE_FIELDS).map(([field, spec]) => [field, spec.maxLength])))}. Total maximum: 6000. If safe compression is impossible, return the original value.`,
+      `You maintain only the supplied StrataGate Persistent Profile. Call ${STRUCTURED_TOOLS.profileMaintenance.name} exactly once with all ${Object.keys(PROFILE_FIELDS).length} string fields. You may deduplicate, merge repeated meaning, shorten redundant wording, and improve organization. Preserve every unique fact, uncertainty, constraint, and instruction. Never infer or add facts, broaden meaning, or read Event, Graph, or conversation history. If two statements might conflict or cannot safely merge, retain both. Keep ${PROFILE_PROTECTED_SHORT_FIELDS.join(", ")} unchanged except necessary whitespace cleanup. defaultLocation is the reference when a task specifies no location; homeCity is the stable city of residence. They are independent, neither means temporary/current location, and travel must not overwrite either. preferredLanguage and reasoningLanguage are independent: never infer, copy, or merge either language field into the other. reasoningLanguage is only for user-visible reasoning/thinking text when supported, not hidden chain-of-thought. Character limits (Unicode code points): ${JSON.stringify(Object.fromEntries(Object.entries(PROFILE_FIELDS).map(([field, spec]) => [field, spec.maxLength])))}. Total maximum: 6000. If safe compression is impossible, return the original value.`,
       { profile, fieldDefinitions: PROFILE_FIELDS },
     ))
     if (Object.keys(raw).length !== Object.keys(PROFILE_FIELDS).length || Object.keys(raw).some((field) => !(field in PROFILE_FIELDS))) {

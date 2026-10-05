@@ -2,7 +2,6 @@ import { mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   Config,
   isLiveConfigValue,
@@ -17,7 +16,8 @@ import { dropLegacyAgentMemoriesTable } from './metadata.js'
 import { StrataGateRuntime } from './runtime.js'
 import { registerMemoryTools } from './tools.js'
 import { registerAdminRoutes } from './web.js'
-import { assertCompatibleDshRuntime, dshMessageSource } from './dsh-compatibility.js'
+import { assertCompatibleDshRuntime } from './dsh-compatibility.js'
+import { installRetrievalFinalization } from './retrieval-finalization.js'
 import { migrateLegacyCitationSessions } from './legacy-session.js'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent'
@@ -58,11 +58,13 @@ Memory use:
 - For explicit retrieval, treat relevance and sufficiency separately. Mark evidence sufficient only when it directly supports all material parts needed for the answer; partial when relevant evidence exists but important facts, time, relationships, or source details are missing; wrong when the retrieved evidence does not support the requested claim or refers to a different subject.
 - If evidence is partial or wrong, follow nextStrategy with a targeted next step: refine the Event or Graph search, expand the relevant Event, Graph node, or Block, or inspect raw memory. Do not repeat the same failed search unchanged, and do not present uncertain memory as fact.
 - Only evidence actually used in the final answer or action may be reinforced.
+- Every explicit retrieval batch must be closed BEFORE you begin outputting the final user-facing answer. The required order is retrieval → Evidence Gate (memory_assess) → memory_record_use for every batch → final user answer. Assessment and usage recording are pre-answer evidence processing. Decide which evidence the answer will actually adopt, assess it, and record only those refs; close unused batches with evidence_refs = []. Never write the user answer first and append receipts afterwards. After memory_record_use, generate the user answer; never turn its internal batch/receipt status into the final answer.
 
 Memory writing:
 
 - Choose by scope rather than the word "remember": memory_profile_update is for always-on global Profile fields supplied to future conversations without retrieval; memory_remember is for durable information that should surface when relevant; information that matters only to the current turn needs neither. Store the same information in one place by default.
 - Use memory_profile_update only for information that belongs in a Profile field. Explicit user requests may be applied directly; inferred changes must follow the tool's consent rule. Final-answer language and visible-reasoning language are independent fields. Do not use memory_remember to bypass Profile consent.
+- Stable default location (defaultLocation: reference for weather, nearby services, or local recommendations when no location is specified) and usual city of residence (homeCity) belong preferentially in the always-on Profile. They are independent: do not infer either from the other or from a current/temporary location or a trip. Temporary travel must not automatically overwrite these stable fields. Follow the same Profile consent rule.
 - Use memory_remember for durable project facts, past decisions, corrections, experiences, and context-specific preferences. Record one self-contained, grounded fact per call, with necessary project, time, and scope. Never record speculation, secrets, credentials, or transient task state.`
 
 const FEEDBACK_PROTOCOL = `[StrataGate feedback policy]
@@ -167,16 +169,7 @@ export async function apply(ctx: Context, config: StrataGateConfig): Promise<() 
     if (feedbackSuggestion) contexts.push({ name: 'stratagate:feedback-suggestion', text: feedbackSuggestion })
     return { ...assembled, contexts }
   })
-  ctx.on('agent/turn-stopping', ({ agent }) => {
-    if (!runtime.needsRecordUse(agent.session)) return
-    agent.steer(createUserMessage({
-      content: [{
-        type: 'text',
-        text: `StrataGate retrieval batches are still unresolved: ${runtime.pendingBatchIds(agent.session).join(', ')}. Before ending this turn, close each one with memory_record_use using its batch_id and evidence_refs set to exactly the refs from that batch used in the answer, or [] if none were used.`,
-      }],
-      source: dshMessageSource('instructions'),
-    }))
-  })
+  installRetrievalFinalization(ctx, runtime)
   registerMemoryTools(ctx, runtime)
   ctx.on('tools/result', (exec, result) => {
     if (!result.isError || !exec.agent) return
