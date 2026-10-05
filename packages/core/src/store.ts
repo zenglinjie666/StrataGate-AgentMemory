@@ -761,6 +761,11 @@ export class StrataGate {
     await this.commitMutation(() => this.topicDirectory.fail(jobId, error, toUtc8Iso(this.now())));
   }
 
+  /** Queue only this exhausted, still-current input for a new bounded cycle. */
+  async retryTopicProjection(jobId: string): Promise<{ jobId: string; status: 'pending' }> {
+    return this.commitMutation(() => this.topicDirectory.retry(jobId, this.listAllEvents(), toUtc8Iso(this.now())));
+  }
+
   /** Reload durable changes from another worker without creating a write or receipt. */
   async refreshFromStorage(): Promise<void> {
     if (!this.storage || !this.namespace) return;

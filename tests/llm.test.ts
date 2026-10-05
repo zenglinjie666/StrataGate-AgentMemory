@@ -683,6 +683,21 @@ describe('DeepSeek Harness model JSON retries', () => {
 })
 
 describe('memory topic model projection', () => {
+  it('uses broad chapter routing instructions and preserves concrete section subjects', async () => {
+    const output = { topics: [{ title: 'StrataGate', description: '项目的界面与兼容性记录',
+      sourceEventIds: ['evt_topic_new'],
+      overview: [{ kind: 'history', title: '界面与交互', text: '历史界面变更，尚未确认发布', sourceEventIds: ['evt_topic_new'] }],
+    }] }
+    const { bridge, session, calls } = modelBridge([{ tool: output }])
+    expect(await bridge.run(session, () => bridge.topicProjector({ ...context(), existingTopics: [] }))).toEqual(output)
+    const request = calls.mock.calls[0]![0] as any
+    expect(request.system).toContain('长期的大章节')
+    expect(request.system).toContain('StrataGate UI、DSH 兼容、Topic Directory、Retrieval')
+    expect(request.system).toContain('归类不等于把事实合并')
+    expect(request.system).toContain('每批通常只新增 0-2 个大章节')
+    expect(request.tools[0].parameters.properties.topics.items.properties.overview.items.properties.title).toBeDefined()
+  })
+
   function event(id = 'evt_topic_new', summary = '计划下周迁移数据库，尚未执行。'): EventCard {
     return {
       id, title: 'StrataGate 数据库迁移计划', summary,

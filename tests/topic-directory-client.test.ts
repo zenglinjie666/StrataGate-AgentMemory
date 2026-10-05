@@ -51,7 +51,7 @@ function clientRenderer(runEffects = false, fetchOverride?: any) {
   }
   const source = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8').replace(
     "    exports.name = 'stratagate-dsh'",
-    "    exports.__topicTest = { TopicDirectory, TopicSection, TopicBootstrapNotice, LongTermPage, MemoryPage, directoryScrollAction, topicSections, chapterOrdinal, useTopicEventPages }; exports.name = 'stratagate-dsh'",
+    "    exports.__topicTest = { TopicDirectory, TopicSection, TopicRetryButton, TopicBootstrapNotice, LongTermPage, MemoryPage, directoryScrollAction, topicSections, chapterOrdinal, useTopicEventPages }; exports.name = 'stratagate-dsh'",
   ).replace('      let content = null', '      exports.__topicTest.dashboardLoader = loadDashboard; let content = null')
   let backendDirectory = fixture()
   const fetchMock = vi.fn(fetchOverride || (async (url: string) => {
@@ -177,6 +177,78 @@ function pageReply(url: string, items: any[], total: number, nextOffset: number 
 }
 
 describe('Topic Directory client interactions', () => {
+  it('shows concrete section names under a broad chapter without changing page scope keys', () => {
+    const client = clientRenderer()
+    const sections = client.topicSections({ overview: [
+      { kind: 'history', title: '界面与交互', text: 'UI 历史' },
+      { kind: 'history', title: 'DSH 兼容', text: '兼容性历史' },
+      { kind: 'decision', title: '界面与交互', text: 'UI 决定' },
+    ] })
+    expect(sections.map((section: any) => section.uiTitle)).toEqual(['界面与交互（一）', 'DSH 兼容', '界面与交互（二）'])
+    expect(sections.map((section: any) => section.uiKey)).toEqual(['history:0', 'history:1', 'decision:0'])
+  })
+
+  it('posts the selected failed batch once and refreshes only after it is queued', async () => {
+    let resolve!: (value: any) => void
+    const client = clientRenderer(true, (url: string, options: any) => {
+      expect(new URL(url, 'http://localhost').pathname).toBe('/api/stratagate/topics/retry')
+      expect(options.method).toBe('POST')
+      return new Promise((done) => { resolve = done })
+    })
+    const refresh = vi.fn()
+    const props = { failure: { jobId: 'failed-12', eventCount: 12 }, namespace: 'workspace-a', revision: 'revision-a', onDirectoryChanged: refresh }
+    let tree = client.render(client.TopicRetryButton, props)
+    const button = buttons(tree, '重新整理这 12 条')[0]!
+    const run = button.props.onClick()
+    button.props.onClick()
+    tree = client.render(client.TopicRetryButton, props)
+    expect(buttons(tree, '正在提交…')[0]!.props.disabled).toBe(true)
+    expect(client.fetch).toHaveBeenCalledTimes(1)
+    const params = new URL(String(client.fetch.mock.calls[0]![0]), 'http://localhost').searchParams
+    expect(Object.fromEntries(params)).toEqual({ namespace: 'workspace-a', jobId: 'failed-12', expectedRevision: 'revision-a' })
+    expect(refresh).not.toHaveBeenCalled()
+    resolve({ ok: true, json: async () => ({ status: 'pending', jobId: 'retry-12' }) })
+    await run
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts a retry on workspace changes and ignores a late result instead of refreshing the new workspace', async () => {
+    let resolve!: (value: any) => void
+    let signal!: AbortSignal
+    const client = clientRenderer(true, (_url: string, options: any) => {
+      signal = options.signal
+      return new Promise((done) => { resolve = done })
+    })
+    const refresh = vi.fn()
+    const props = { failure: { jobId: 'failed', eventCount: 2 }, namespace: 'workspace-a', revision: 'revision-a', onDirectoryChanged: refresh }
+    let tree = client.render(client.TopicRetryButton, props)
+    const run = buttons(tree, '重新整理这 2 条')[0]!.props.onClick()
+    props.namespace = 'workspace-b'
+    props.revision = 'revision-b'
+    client.render(client.TopicRetryButton, props)
+    expect(signal.aborted).toBe(true)
+    tree = client.render(client.TopicRetryButton, props)
+    expect(buttons(tree, '重新整理这 2 条')[0]!.props.disabled).toBe(false)
+    resolve({ ok: true, json: async () => ({ status: 'pending' }) })
+    await run
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed submission retryable and reloads on a stale failure conflict', async () => {
+    let status = 503
+    const client = clientRenderer(true, async () => ({ ok: false, status, json: async () => ({ error: 'failed' }) }))
+    const refresh = vi.fn()
+    const props = { failure: { jobId: 'failed', eventCount: 1 }, namespace: 'workspace-a', revision: 'revision-a', onDirectoryChanged: refresh }
+    let tree = client.render(client.TopicRetryButton, props)
+    await buttons(tree, '重新整理这 1 条')[0]!.props.onClick()
+    tree = client.render(client.TopicRetryButton, props)
+    expect(tree.text).toContain('提交失败，请重试。')
+    expect(buttons(tree, '重新整理这 1 条')[0]!.props.disabled).toBe(false)
+    status = 409
+    await buttons(tree, '重新整理这 1 条')[0]!.props.onClick()
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
   it('uses count-only navigation for a large uncovered section and lazily reads its first nine rows', async () => {
     const client = clientRenderer(true, async (url: string) => {
       const parsed = new URL(url, 'http://localhost')

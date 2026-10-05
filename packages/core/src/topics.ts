@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { bm25Rank, weightedSearchTokens } from './search.js';
 import type { EventCard } from './types.js';
 
-export const MEMORY_TOPIC_PROJECTOR_VERSION = 1;
+export const MEMORY_TOPIC_PROJECTOR_VERSION = 2;
 export const TOPIC_BATCH_LIMIT = 12;
 export const TOPIC_CANDIDATE_LIMIT = 12;
 export const TOPIC_MAX_ATTEMPTS = 3;
@@ -11,6 +11,8 @@ export type MemoryTopicOverviewKind = 'history' | 'decision' | 'change' | 'open-
 
 export interface MemoryTopicOverview {
   kind: MemoryTopicOverviewKind;
+  /** Concrete subject within a broad chapter; optional for existing snapshots. */
+  title?: string;
   text: string;
   sourceEventIds: string[];
 }
@@ -223,6 +225,13 @@ export class MemoryTopicDirectory {
   }
 
   synchronize(events: readonly EventCard[], now: string): void {
+    if ((this.state.bootstrap && this.state.bootstrap.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION)
+      || this.state.topics.some((topic) => topic.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION)
+      || this.state.jobs.some((job) => job.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION)) {
+      // Replace only the derived generation. Fragmented predecessors must not
+      // remain candidates or repeatedly dirty new projections.
+      this.state = { topics: [], jobs: [], projectedVersions: {} };
+    }
     const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
     const versions = sourceVersions(sources);
     for (const topic of this.state.topics) {
@@ -259,13 +268,13 @@ export class MemoryTopicDirectory {
       .map((job) => job.id));
     this.state.jobs = this.state.jobs.filter((job) => !finished.includes(job) || retain.has(job.id));
     const bootstrap = this.state.bootstrap;
-    if (bootstrap && bootstrap.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION && bootstrap.status !== 'completed') {
+    if (bootstrap && bootstrap.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION) {
       const outstanding = Object.entries(bootstrap.sourceVersions).filter(([id, version]) =>
         versions.get(id) === version && this.state.projectedVersions[id] !== version);
       bootstrap.failedEvents = outstanding.filter(([id, version]) => this.state.jobs.some((job) =>
         !job.superseded && job.status === 'failed' && job.attempts >= TOPIC_MAX_ATTEMPTS
         && job.sourceVersions[id] === version && jobInputsCurrent(job, versions))).length;
-      if (outstanding.length === bootstrap.failedEvents) {
+      if (outstanding.length === bootstrap.failedEvents && bootstrap.status !== 'completed') {
         bootstrap.status = 'completed'; bootstrap.completedAt = now;
       }
     }
@@ -383,7 +392,11 @@ export class MemoryTopicDirectory {
     const query = batch.map(compactEvent).map((event) => `${event.title} ${event.summary} ${event.tags.join(' ')}`).join(' ');
     const eligibleTopics = this.list(events).filter((topic) => !topic.id.startsWith('fallback:'));
     const lexicalScores = new Map(bm25Rank(eligibleTopics, query, (topic) => weightedSearchTokens([
-      [topic.title, 4], [topic.description, 2],
+      [topic.title, 8], [topic.description, 2],
+      // Route broad chapters by bounded member hints as well. These hints
+      // select candidates locally; they are never new factual model evidence.
+      [topic.sourceEventIds.slice(0, 3).concat(topic.sourceEventIds.slice(-3))
+        .flatMap((id) => { const event = sources.get(id); return event ? [bounded(event.title, 120), ...event.tags.slice(0, 4).map((tag) => bounded(tag, 40))] : []; }).join(' '), 4],
     ])).map(({ item, score }) => [item.id, score]));
     const overlap = (topic: MemoryTopic): number => topic.sourceEventIds.filter((id) => batchIds.has(id)).length;
     const candidates = eligibleTopics.sort((a, b) => overlap(b) - overlap(a)
@@ -444,6 +457,7 @@ export class MemoryTopicDirectory {
     const batchIds = new Set(job.sourceEventIds);
     const covered = new Set<string>();
     const touched = new Set<string>();
+    const labels = new Set<string>();
     const proposals: StoredMemoryTopic[] = [];
     const checkIds = (ids: string[], label: string): string[] => {
       if (!Array.isArray(ids) || ids.length === 0 || unique(ids).length !== ids.length
@@ -459,7 +473,16 @@ export class MemoryTopicDirectory {
       const inferred = matching.length === 1 && result.topics.filter((other) =>
         Array.isArray(other.sourceEventIds) && matching[0]!.sourceEventIds.some((eventId) => other.sourceEventIds.includes(eventId))).length === 1
         ? matching[0] : undefined;
-      const existing = proposal.topicId ? this.state.topics.find((topic) => topic.id === proposal.topicId) : inferred;
+      const label = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+      const sameLabel = typeof proposal.title === 'string' ? this.state.topics.filter((topic) =>
+        !topic.invalidated && candidates.has(topic.id) && label(topic.title) === label(proposal.title)) : [];
+      const existing = proposal.topicId ? this.state.topics.find((topic) => topic.id === proposal.topicId)
+        : inferred ?? (sameLabel.length === 1 ? sameLabel[0] : undefined);
+      if (typeof proposal.title === 'string') {
+        const key = label(proposal.title);
+        if (labels.has(key)) throw new Error('Invalid duplicate chapter label in one projection.');
+        labels.add(key);
+      }
       if (proposal.topicId && (!existing || !candidates.has(proposal.topicId))) throw new Error('Unknown or unexposed topic id.');
       const topicId = existing?.id ?? `topic_${randomUUID()}`;
       if (touched.has(topicId)) throw new Error('A topic may be updated only once per projection.');
@@ -469,6 +492,8 @@ export class MemoryTopicDirectory {
       for (const eventId of ids) if (batchIds.has(eventId)) covered.add(eventId);
       if (!Array.isArray(proposal.overview) || proposal.overview.length > 8) throw new Error('Topic overview must contain at most 8 sections.');
       for (const part of proposal.overview) {
+        if (part.title !== undefined && (typeof part.title !== 'string' || !part.title.trim()
+          || [...part.title].length > 80)) throw new Error('Invalid topic overview title.');
         if (!['history', 'decision', 'change', 'open-question', 'scope'].includes(part.kind)
           || typeof part.text !== 'string' || !part.text.trim() || [...part.text].length > 600) throw new Error('Invalid topic overview section.');
         checkIds(part.sourceEventIds, 'overview');
@@ -525,5 +550,31 @@ export class MemoryTopicDirectory {
     const job = this.state.jobs.find((candidate) => candidate.id === id);
     if (!job) throw new Error(`Unknown topic projection: ${id}`);
     return job;
+  }
+
+  retry(id: string, events: readonly EventCard[], now: string): { jobId: string; status: 'pending' } {
+    const previous = this.requireJob(id);
+    const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
+    const versions = sourceVersions(sources);
+    if (previous.superseded || previous.status !== 'failed' || previous.attempts < TOPIC_MAX_ATTEMPTS
+      || previous.nextRetryAt !== null || !jobInputsCurrent(previous, versions)
+      || previous.sourceEventIds.some((eventId) => this.state.projectedVersions[eventId] === versions.get(eventId))) {
+      throw new Error('Topic retry conflict: failure is no longer current or retryable.');
+    }
+    const job: TopicProjectionJob = {
+      ...structuredClone(previous), id: `tproj_${randomUUID()}`, status: 'pending', attempts: 0,
+      superseded: false, context: null, dependencyVersions: {}, candidateVersions: {}, topicIds: [],
+      lastError: null, nextRetryAt: null, leaseUntil: null, createdAt: now, updatedAt: now,
+    };
+    previous.superseded = true;
+    previous.updatedAt = now;
+    this.state.jobs.push(job);
+    const bootstrap = this.state.bootstrap;
+    if (bootstrap && job.sourceEventIds.some((eventId) => bootstrap.sourceVersions[eventId] === versions.get(eventId))) {
+      bootstrap.status = 'pending';
+      bootstrap.completedAt = null;
+    }
+    this.synchronize(events, now);
+    return { jobId: job.id, status: 'pending' };
   }
 }

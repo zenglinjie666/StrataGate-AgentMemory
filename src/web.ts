@@ -556,6 +556,7 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
         coverage: { ...topic.coverage },
         overview: topic.overview.map((part) => ({
           kind: part.kind, text: part.text,
+          ...(part.title === undefined ? {} : { title: part.title }),
           sourceEventCount: new Set(part.sourceEventIds).size,
         })),
       })),
@@ -1544,6 +1545,26 @@ async function retryJob(runtime: StrataGateRuntime, url: URL): Promise<unknown> 
   }
 }
 
+async function retryTopicProjection(runtime: StrataGateRuntime, url: URL): Promise<unknown> {
+  const namespace = url.searchParams.get('namespace')?.trim() ?? ''
+  const jobId = url.searchParams.get('jobId')?.trim() ?? ''
+  const expectedRevision = url.searchParams.get('expectedRevision')?.trim() ?? ''
+  if (!namespace || !jobId || !expectedRevision) throw new AdminHttpError(400, 'namespace, jobId and expectedRevision are required')
+  const snapshot = await requiredSnapshot(runtime, namespace)
+  const projection = topicDirectoryProjection(snapshot, runtime.adminAgentMemoryRetrievalWeight())
+  if (projection.data.revision !== expectedRevision) throw new AdminHttpError(409, '目录已更新，请重新读取后重试', { code: 'directory-changed' })
+  // Only failures visible in the selected lane and frozen history may be retried.
+  if (!projection.failures.some((failure) => failure.jobId === jobId)) throw new AdminHttpError(409, '该失败批次已变化或不再需要重试', { code: 'directory-changed' })
+  try {
+    return { namespace, ...(await runtime.adminRetryTopicProjection(namespace, jobId)) }
+  } catch (error) {
+    if (error instanceof Error && /Topic retry conflict|Unknown topic projection/.test(error.message)) {
+      throw new AdminHttpError(409, '来源或任务已更新，请重新读取目录', { code: 'directory-changed' })
+    }
+    throw error
+  }
+}
+
 function receiptSources(snapshot: StrataGateSnapshot, receipt: UsageReceipt): unknown {
   const events = snapshot.events.filter(({ id }) => receipt.eventIds.includes(id))
   const elements = snapshot.elements.filter(({ id }) => receipt.elementIds.includes(id))
@@ -1690,6 +1711,9 @@ export async function handleAdminRequest(runtime: StrataGateRuntime, req: WebReq
     } else if (path === '/api/stratagate/jobs/retry') {
       if (req.method !== 'POST') throw new AdminHttpError(405, 'StrataGate job retry requires POST')
       sendJson(res, 200, await retryJob(runtime, url))
+    } else if (path === '/api/stratagate/topics/retry') {
+      if (req.method !== 'POST') throw new AdminHttpError(405, 'Topic retry requires POST')
+      sendJson(res, 200, await retryTopicProjection(runtime, url))
     } else if (path === '/api/stratagate/import') {
       if (req.method === 'GET') {
         const operation = url.searchParams.get('operation')

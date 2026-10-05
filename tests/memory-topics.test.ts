@@ -867,6 +867,40 @@ describe('memory topic runtime boundaries', () => {
         expect(await reader.claimNextTopicProjection()).toBeNull()
         expect(new Set(reader.listMemoryTopics().flatMap((topic) => topic.sourceEventIds)).size).toBe(14)
       } finally { await reader.close() }
+      const exhausted = state.jobs.find((job) => !job.superseded && job.status === 'failed')!
+      const metadata = new DshMetadataStore(database)
+      try {
+        expect(metadata.reserveTopicBootstrapCall(now)).toBe(true)
+        expect(metadata.reserveTopicBootstrapCall(now)).toBe(true)
+      } finally { metadata.close() }
+      const budgetBeforeRetry = topicBudget(database)
+      const queued = await runtime.adminRetryTopicProjection(namespace, exhausted.id)
+      manualWorker(runtime)
+      expect(queued).toMatchObject({ status: 'pending' })
+      await expect(runtime.adminRetryTopicProjection(namespace, exhausted.id)).rejects.toThrow(/conflict/)
+      await worker.runBackgroundNamespace(namespace)
+      expect(topicProjector).toHaveBeenCalledTimes(4)
+      expect(topicBudget(database)).toBe(budgetBeforeRetry)
+      const pending = (await runtime.adminSnapshot(namespace))!.memoryTopicState!
+      expect(pending.bootstrap).toMatchObject({ status: 'pending', completedAt: null, failedEvents: 0 })
+      expect(pending.jobs.find((job) => job.id === queued.jobId)).toMatchObject({ attempts: 0, status: 'pending' })
+      await runtime.close()
+      const restarted = new StrataGateRuntime(makeConfig(database), {
+        ...makeModels().models, isReady: () => true, topicProjector,
+      } as unknown as DshModelBridge)
+      const restartedWorker = manualWorker(restarted)
+      try {
+        await restartedWorker.runBackgroundNamespace(namespace)
+        expect(topicProjector).toHaveBeenCalledTimes(4)
+        now += TOPIC_BOOTSTRAP_WINDOW_MS; vi.setSystemTime(now)
+        await restartedWorker.runBackgroundNamespace(namespace)
+        expect(topicProjector).toHaveBeenCalledTimes(5)
+        expect(topicProjector.mock.calls[4]![0].events.map(({ id }) => id)).toEqual(failedIds)
+        const completed = (await restarted.adminSnapshot(namespace))!.memoryTopicState!
+        expect(completed.bootstrap).toMatchObject({ status: 'completed', failedEvents: 0 })
+        expect(completed.jobs.find((job) => job.id === queued.jobId)).toMatchObject({ attempts: 1, status: 'completed' })
+        expect(new Set(completed.topics.flatMap((topic) => topic.sourceEventIds)).size).toBe(14)
+      } finally { await restarted.close() }
     } finally {
       await runtime.close()
       vi.useRealTimers()

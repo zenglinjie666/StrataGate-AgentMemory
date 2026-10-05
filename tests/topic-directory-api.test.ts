@@ -90,6 +90,50 @@ async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GE
 }
 
 describe('read-only Topic Directory admin data', () => {
+  it('queues only a selected current visible failure through POST and rejects stale or hidden retries', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('history')]
+    snapshot.agentEvents = [event('agent-history')]
+    snapshot.memoryTopicState = freeze([...snapshot.events, ...snapshot.agentEvents])
+    snapshot.memoryTopicState.jobs = [
+      failedJob('visible-failure', snapshot.events),
+      failedJob('agent-failure', snapshot.agentEvents),
+    ]
+    let weight = 1
+    const runtime = fakeRuntime(snapshot, () => weight)
+    const retry = vi.fn(async () => ({ jobId: 'new-attempt', status: 'pending' as const }))
+    runtime.adminRetryTopicProjection = retry
+    const first = await request(runtime)
+    expect((await request(runtime, 'topics/retry&jobId=visible-failure&expectedRevision=' + first.body.revision)).status).toBe(405)
+    expect((await request(runtime, 'topics/retry&jobId=visible-failure', 'POST')).status).toBe(400)
+    expect((await request(runtime, 'topics/retry&jobId=visible-failure&expectedRevision=stale', 'POST')).status).toBe(409)
+    expect((await request(runtime, 'topics/retry&jobId=unknown&expectedRevision=' + first.body.revision, 'POST')).status).toBe(409)
+    expect(retry).not.toHaveBeenCalled()
+    expect((await request(runtime, 'topics/retry&jobId=visible-failure&expectedRevision=' + first.body.revision, 'POST')).body)
+      .toMatchObject({ namespace, jobId: 'new-attempt', status: 'pending' })
+    expect(retry).toHaveBeenCalledExactlyOnceWith(namespace, 'visible-failure')
+    retry.mockClear()
+    weight = 0
+    const changed = await request(runtime)
+    expect((await request(runtime, 'topics/retry&jobId=agent-failure&expectedRevision=' + changed.body.revision, 'POST')).status).toBe(409)
+    snapshot.events[0]!.status = 'forgotten'
+    expect((await request(runtime, 'topics/retry&jobId=visible-failure&expectedRevision=' + changed.body.revision, 'POST')).status).toBe(409)
+    expect(retry).not.toHaveBeenCalled()
+  })
+
+  it('converts a source race after the directory check into a refresh conflict', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.events = [event('history')]
+    snapshot.memoryTopicState = freeze(snapshot.events)
+    snapshot.memoryTopicState.jobs = [failedJob('failure', snapshot.events)]
+    const runtime = fakeRuntime(snapshot)
+    runtime.adminRetryTopicProjection = vi.fn(async () => { throw new Error('Topic retry conflict: source changed') })
+    const directory = await request(runtime)
+    const result = await request(runtime, 'topics/retry&jobId=failure&expectedRevision=' + directory.body.revision, 'POST')
+    expect(result.status).toBe(409)
+    expect(result.body.code).toBe('directory-changed')
+  })
+
   it('exposes every chapter with counts while loading Event references in bounded pages', async () => {
     const snapshot = emptySnapshot()
     snapshot.events = Array.from({ length: 60 }, (_, index) => event(`event-${String(index).padStart(3, '0')}`))

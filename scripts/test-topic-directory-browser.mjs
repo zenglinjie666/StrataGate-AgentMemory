@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
+import { SqliteStorage } from '../packages/core/dist/sqlite.js'
 import { assertDisposableDatabase, durableBrowserSnapshot, seedTopicBrowserFixtures, topicBrowserFixtures as fixtures } from './fixtures/topic-directory.mjs'
 
 // First build:core (fixtures load this checkout's packages/core/dist), then run
@@ -520,6 +521,42 @@ try {
   assert.deepEqual(durableBrowserSnapshot(database), baseline, 'Browsing changed memory, model receipts, weights, topic state or integration metadata')
   assert.deepEqual(errors, [], 'Browser page raised an uncaught JavaScript exception')
   checks.push('get-only-and-all-durable-tables-unchanged-no-model-or-adoption-records')
+  if (process.argv.includes('--retry-check')) {
+    await memory.getByRole('button', { name: '长期记忆', exact: true }).click()
+    await selectNamespace(fixtures.failed)
+    await directory.waitFor()
+    const reader = new SqliteStorage({ filename: database, readonly: true })
+    try {
+      const before = (await reader.load(fixtures.failed)).snapshot
+      const failureId = before.memoryTopicState.jobs.find((job) => !job.superseded && job.status === 'failed').id
+      const revision = directories.at(-1).revision
+      const queuedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/stratagate/topics/retry')
+      const retryButton = directory.getByRole('button', { name: '重新整理这 1 条', exact: true })
+      await retryButton.waitFor()
+      // The retry is visible beside the notice before opening failure details.
+      await capture('topic-history-retry-action')
+      await retryButton.evaluate((button) => { button.click(); button.click() })
+      const response = await queuedResponse
+      assert.equal(response.status(), 200)
+      const queued = await response.json()
+      assert.equal(queued.status, 'pending')
+      assert.notEqual(queued.jobId, failureId)
+      await directory.getByText(/正在整理历史记忆/).waitFor()
+      await capture('topic-history-retry-queued')
+      assert.equal(requests.filter(({ method, pathname }) => method === 'POST' && pathname === '/api/stratagate/topics/retry').length, 1)
+      const after = (await reader.load(fixtures.failed)).snapshot
+      assert.equal(after.memoryTopicState.jobs.find((job) => job.id === queued.jobId).attempts, 0)
+      assert.equal(after.memoryTopicState.bootstrap.status, 'pending')
+      assert.equal(after.memoryTopicState.bootstrap.failedEvents, 0)
+      for (const field of ['events', 'agentEvents', 'blocks', 'openTail', 'graphNodes', 'graphEdges', 'usageReceipts', 'successfulModelResponses']) assert.deepEqual(after[field], before[field], 'Retry changed authoritative memory or model/adoption records: ' + field)
+      const duplicateUrl = '/api/stratagate/topics/retry?' + new URLSearchParams({ namespace: fixtures.failed, jobId: failureId, expectedRevision: revision })
+      const status = await page.evaluate(async (url) => (await fetch(url, { method: 'POST' })).status, duplicateUrl)
+      assert.equal(status, 409)
+      assert.deepEqual((await reader.load(fixtures.failed)).snapshot.memoryTopicState, after.memoryTopicState)
+      assert.deepEqual(errors, [])
+      checks.push('visible-retry-button-single-post-queued-fresh-id-duplicate-409-no-model-or-authoritative-mutation')
+    } finally { await reader.close() }
+  }
   const result = { result: 'passed', checks, screenshots, themes: { light: lightTheme, dark: darkTheme }, requests, topicPages, errors, outputDirectory }
   await writeFile(join(outputDirectory, 'topic-directory-browser-review.json'), JSON.stringify(result, null, 2) + '\n')
   console.log(JSON.stringify({ ...result, topicPages: topicPages.map(({ topicId, sectionKey, offset, limit, total, items }) => ({ topicId, sectionKey, offset, limit, total, count: items.length })) }))

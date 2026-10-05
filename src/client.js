@@ -2106,12 +2106,18 @@ window.__ModuleLoader__.load({
     function topicSections(topic) {
       const occurrences = new Map()
       const totals = new Map()
-      for (const part of topic.overview || []) totals.set(part.kind, (totals.get(part.kind) || 0) + 1)
+      for (const part of topic.overview || []) {
+        const label = part.title || TOPIC_SECTION_TITLES[part.kind] || '主题概览'
+        totals.set(label, (totals.get(label) || 0) + 1)
+      }
+      const labelOccurrences = new Map()
       return (topic.overview || []).map((part) => {
         const occurrence = occurrences.get(part.kind) || 0
         occurrences.set(part.kind, occurrence + 1)
-        const title = TOPIC_SECTION_TITLES[part.kind] || '主题概览'
-        return { ...part, uiKey: String(part.kind) + ':' + occurrence, uiTitle: title + (totals.get(part.kind) > 1 ? '（' + chapterOrdinal(occurrence + 1) + '）' : '') }
+        const title = part.title || TOPIC_SECTION_TITLES[part.kind] || '主题概览'
+        const labelOccurrence = labelOccurrences.get(title) || 0
+        labelOccurrences.set(title, labelOccurrence + 1)
+        return { ...part, uiKey: String(part.kind) + ':' + occurrence, uiTitle: title + (totals.get(title) > 1 ? '（' + chapterOrdinal(labelOccurrence + 1) + '）' : '') }
       })
     }
 
@@ -2241,6 +2247,42 @@ window.__ModuleLoader__.load({
           })())))
     }
 
+    function TopicRetryButton({ failure, namespace, revision, onDirectoryChanged }) {
+      const scope = JSON.stringify([namespace, revision, failure.jobId])
+      const [state, setState] = React.useState({ scope, busy: false, error: '' })
+      const current = state.scope === scope ? state : { scope, busy: false, error: '' }
+      const request = React.useRef(null)
+      const scopeRef = React.useRef(scope)
+      if (scopeRef.current !== scope) {
+        request.current?.abort()
+        request.current = null
+        scopeRef.current = scope
+      }
+      React.useEffect(() => () => {
+        if (scopeRef.current === scope) { request.current?.abort(); request.current = null }
+      }, [scope])
+      const retry = async () => {
+        if (request.current) return
+        const controller = new AbortController()
+        request.current = controller
+        setState({ scope, busy: true, error: '' })
+        try {
+          await api('topics/retry', { namespace, jobId: failure.jobId, expectedRevision: revision }, { method: 'POST', signal: controller.signal })
+          if (request.current !== controller || controller.signal.aborted) return
+          await onDirectoryChanged?.()
+        } catch (reason) {
+          if (request.current !== controller || controller.signal.aborted) return
+          if (reason?.status === 409) await onDirectoryChanged?.()
+          else setState({ scope, busy: false, error: '提交失败，请重试。' })
+        } finally {
+          if (request.current === controller) { request.current = null; setState((previous) => previous.scope === scope ? { ...previous, busy: false } : previous) }
+        }
+      }
+      return h('div', { className: 'sg-topic-retry' },
+        h('button', { type: 'button', className: 'sg-topic-status-details', disabled: current.busy || !revision, onClick: retry }, current.busy ? '正在提交…' : '重新整理这 ' + Number(failure.eventCount || 0) + ' 条'),
+        current.error ? h('p', { role: 'alert' }, current.error) : null)
+    }
+
     function TopicBootstrapNotice({ bootstrap, namespace, revision, active, openEvent, onDirectoryChanged }) {
       const [detailsOpen, setDetailsOpen] = React.useState(false)
       if (!bootstrap || Number(bootstrap.total || 0) === 0) return null
@@ -2250,11 +2292,14 @@ window.__ModuleLoader__.load({
       return h('aside', { className: 'sg-topic-bootstrap ' + (failures ? 'attention' : 'processing'), 'aria-label': '历史记忆整理状态' },
         h('div', { className: 'sg-topic-bootstrap-line', role: 'status', 'aria-live': 'polite' }, h('span', { className: working ? 'sg-processing-icon' : 'sg-topic-warning', 'aria-hidden': 'true' }, working ? '↻' : '⚠'),
           h('span', null, working ? '正在整理历史记忆 · ' + Number(bootstrap.completed || 0) + ' / ' + Number(bootstrap.total || 0) : failures + ' 条历史记忆暂未完成整理'),
+          bootstrap.failures?.[0] ? h(TopicRetryButton, { key: bootstrap.failures[0].jobId, failure: bootstrap.failures[0], namespace, revision, onDirectoryChanged }) : null,
           failures ? h('button', { type: 'button', className: 'sg-topic-status-details', 'aria-expanded': detailsOpen, 'aria-controls': 'sg-topic-bootstrap-details', onClick: () => setDetailsOpen((current) => !current) }, detailsOpen ? '收起详情' : '查看详情') : null),
         h('p', { className: 'sg-topic-bootstrap-copy' }, working ? '不影响正常使用，未整理记忆仍可正常检索' : '原始记忆仍然保留，可正常检索'),
+        failures ? h('p', { className: 'sg-topic-bootstrap-copy' }, '展开详情可重新整理失败批次；提交后按历史额度排队。') : null,
         working && failures ? h('p', { className: 'sg-topic-bootstrap-copy' }, failures + ' 条历史记忆暂未完成整理') : null,
         h(DirectoryFold, { open: detailsOpen, id: 'sg-topic-bootstrap-details' }, h('div', { className: 'sg-topic-failures' },
-          (bootstrap.failures || []).map((failure) => h('div', { key: failure.jobId, className: 'sg-topic-failure' }, h('p', null, '自动整理已停止' + (failure.attempts ? ' · 已尝试 ' + failure.attempts + ' 次' : '')),
+          (bootstrap.failures || []).map((failure, index) => h('div', { key: failure.jobId, className: 'sg-topic-failure' }, h('p', null, '自动整理已停止' + (failure.attempts ? ' · 已尝试 ' + failure.attempts + ' 次' : '')),
+            index > 0 ? h(TopicRetryButton, { failure, namespace, revision, onDirectoryChanged }) : null,
             h(TopicEventList, { namespace, revision, topicId: 'pending', sectionKey: 'failure:' + failure.jobId, total: Number(failure.eventCount || 0), active: active && detailsOpen, openEvent, onDirectoryChanged }), failure.lastError ? h('details', { className: 'sg-topic-failure-technical' }, h('summary', null, '技术详情'), h('p', null, failure.lastError)) : null)),
           !(bootstrap.failures || []).length ? h('p', null, '部分历史记忆暂未形成主题，请从下方待整理事件或事件时间线查看。') : null)))
     }

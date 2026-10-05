@@ -1928,6 +1928,26 @@ export class StrataGateRuntime {
     return tracked
   }
 
+  async adminRetryTopicProjection(namespace: string, id: string): Promise<{ jobId: string; status: 'pending' }> {
+    const key = namespace.trim()
+    const jobId = id.trim()
+    if (!key || !jobId) throw new TypeError('Topic retry requires namespace and job id')
+    const update = this.settingsTail.catch(() => {}).then(async () => {
+      const { memory, owned } = await this.openAdminMemory(key, { derivation: true })
+      try {
+        // Queue only; the normal worker owns model readiness, bounded attempts
+        // and the shared historical allowance, including after restart.
+        return await this.retryTopicWrite(key, memory, () => memory.retryTopicProjection(jobId))
+      } finally {
+        if (owned) await memory.close()
+      }
+    })
+    this.settingsTail = update.then(() => {}, () => {})
+    const result = await update
+    this.wakeBackgroundWorker()
+    return result
+  }
+
   async adminRetryBlockSummary(namespace: string, id: string): Promise<unknown> {
     return this.adminRetryJob(namespace, 'block-summary', id)
   }
