@@ -216,9 +216,9 @@ describe('rebuildable Event-backed topic directory', () => {
         })) }, events, new Date().toISOString());
       }
       loaded.snapshot.memoryTopicState = old.snapshot();
-      loaded.snapshot.memoryTopicState.bootstrap!.projectorVersion = MEMORY_TOPIC_PROJECTOR_VERSION - 1;
-      for (const topic of loaded.snapshot.memoryTopicState.topics) topic.projectorVersion = MEMORY_TOPIC_PROJECTOR_VERSION - 1;
-      for (const job of loaded.snapshot.memoryTopicState.jobs) job.projectorVersion = MEMORY_TOPIC_PROJECTOR_VERSION - 1;
+      loaded.snapshot.memoryTopicState.bootstrap!.projectorVersion = 1;
+      for (const topic of loaded.snapshot.memoryTopicState.topics) topic.projectorVersion = 1;
+      for (const job of loaded.snapshot.memoryTopicState.jobs) job.projectorVersion = 1;
       const oldIds = loaded.snapshot.memoryTopicState.topics.map(({ id }) => id);
       await storage.save(namespace, loaded.snapshot, loaded.revision);
       await storage.close();
@@ -527,8 +527,8 @@ describe('rebuildable Event-backed topic directory', () => {
     const batch = (await memory.claimNextTopicProjection())!;
     const oldId = (await memory.completeTopicProjection(batch.jobId, projection(batch))).topicIds[0]!;
     const oldState = memory.exportSnapshot().memoryTopicState!;
-    oldState.bootstrap!.projectorVersion = MEMORY_TOPIC_PROJECTOR_VERSION - 1;
-    oldState.topics[0]!.projectorVersion = MEMORY_TOPIC_PROJECTOR_VERSION - 1;
+    oldState.bootstrap!.projectorVersion = 1;
+    oldState.topics[0]!.projectorVersion = 1;
     const directory = new MemoryTopicDirectory();
     directory.restore(oldState);
     const now = new Date().toISOString();

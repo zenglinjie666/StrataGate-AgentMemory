@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ResolvedConfig } from '../src/config.js'
 import type { DshModelBridge } from '../src/llm.js'
 import { StrataGateRuntime } from '../src/runtime.js'
+import { SqliteStorage } from '@diqier/stratagate/sqlite'
 import { DshMetadataStore, TOPIC_BOOTSTRAP_WINDOW_MS, TOPIC_BOOTSTRAP_WINDOW_CALLS } from '../src/metadata.js'
 
 interface SeedEvent {
@@ -159,6 +160,63 @@ const deploymentEvents: SeedEvent[] = [
 ]
 
 describe('memory topic runtime boundaries', () => {
+  it('regroups V2 sections within the existing persisted budget and preserves the chapter across restart', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'stratagate-section-budget-'));
+    const database = join(folder, 'memory.db'), namespace = 'dsh:project:sections';
+    const inputs = Array.from({ length: 29 }, (_, index) => ({ id: 'old-' + index,
+      title: '0.2.' + index + ' 缺陷排查', summary: '历史缺陷记录', topic: 'StrataGate' }));
+    let runtime: StrataGateRuntime | undefined;
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const original = (await seed(database, namespace, inputs))[0]!;
+      const storage = new SqliteStorage({ filename: database });
+      try {
+        const loaded = (await storage.load(namespace))!;
+        loaded.snapshot.memoryTopicState!.bootstrap!.projectorVersion = 2;
+        for (const topic of loaded.snapshot.memoryTopicState!.topics) topic.projectorVersion = 2;
+        for (const job of loaded.snapshot.memoryTopicState!.jobs) job.projectorVersion = 2;
+        await storage.save(namespace, loaded.snapshot, loaded.revision);
+      } finally { await storage.close(); }
+      const metadata = new DshMetadataStore(database);
+      try { expect(metadata.reserveTopicBootstrapCall(now)).toBe(true); expect(metadata.reserveTopicBootstrapCall(now)).toBe(true); }
+      finally { metadata.close(); }
+      const previousBudget = topicBudget(database);
+      const topicProjector = vi.fn(async (context: TopicProjectionContext): Promise<TopicProjectionResult> => ({
+        topics: [{ topicId: context.existingTopics[0]!.id, title: 'StrataGate', description: '项目记录',
+          sourceEventIds: context.events.map(({ id }) => id), overview: [{ kind: 'history', title: '缺陷排查与修复',
+            text: '旧缺陷的排查记录', sourceEventIds: context.events.map(({ id }) => id) }] }],
+      }));
+      const open = () => new StrataGateRuntime(makeConfig(database), {
+        ...makeModels().models, isReady: () => true, topicProjector,
+      } as unknown as DshModelBridge);
+      runtime = open(); let worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).not.toHaveBeenCalled(); expect(topicBudget(database)).toBe(previousBudget);
+      const migrated = (await runtime.adminSnapshot(namespace))!.memoryTopicState!;
+      expect(migrated.topics[0]).toMatchObject({ id: original.id, title: 'StrataGate', overview: [] });
+      expect(migrated.projectedVersions).toEqual({});
+      await runtime.close(); runtime = open(); worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).not.toHaveBeenCalled(); expect(topicBudget(database)).toBe(previousBudget);
+      now += TOPIC_BOOTSTRAP_WINDOW_MS;
+      for (let round = 0; round < 5; round++) await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(2);
+      expect(topicProjector.mock.calls.flatMap(([context]) => context.events)).toHaveLength(24);
+      const partial = (await runtime.adminSnapshot(namespace))!.memoryTopicState!;
+      expect(partial.topics[0]!.id).toBe(original.id);
+      expect(Object.keys(partial.projectedVersions)).toHaveLength(24);
+      await runtime.close(); runtime = open(); worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace); expect(topicProjector).toHaveBeenCalledTimes(2);
+      now += TOPIC_BOOTSTRAP_WINDOW_MS;
+      await worker.runBackgroundNamespace(namespace); expect(topicProjector).toHaveBeenCalledTimes(3);
+      const finished = (await runtime.adminSnapshot(namespace))!.memoryTopicState!;
+      expect(finished.bootstrap!.status).toBe('completed');
+      expect(finished.topics[0]!.sourceEventIds).toEqual(original.sourceEventIds);
+      expect(new Set(finished.topics[0]!.overview.map(({ title }) => title))).toEqual(new Set(['缺陷排查与修复']));
+      await worker.runBackgroundNamespace(namespace); expect(topicProjector).toHaveBeenCalledTimes(3);
+    } finally { clock.mockRestore(); await runtime?.close(); await rm(folder, { recursive: true, force: true }); }
+  });
+
   it('discovers events without graph nodes and reads navigation without model calls or adoption', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-navigation-'))
     const database = join(directory, 'memory.db')

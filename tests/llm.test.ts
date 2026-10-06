@@ -683,6 +683,30 @@ describe('DeepSeek Harness model JSON retries', () => {
 })
 
 describe('memory topic model projection', () => {
+  it('requests lasting categories for concrete bug and release Events without merging their facts', async () => {
+    const input = context();
+    input.existingTopics = [];
+    input.events = [event('root-cause', '0.2.4 提取根因仍待确认。'), event('fix', '0.2.7 修复方案只是计划。'),
+      event('installation', '0.2.8 安装已验证。')];
+    const output = { topics: [{ title: 'StrataGate', description: '项目缺陷与发布记录',
+      sourceEventIds: input.events.map(({ id }) => id), overview: [
+        { kind: 'open-question', title: '缺陷排查与修复', text: '根因待确认；修复方案尚未执行。', sourceEventIds: ['root-cause', 'fix'] },
+        { kind: 'history', title: '版本发布与安装', text: '0.2.8 安装已验证。', sourceEventIds: ['installation'] },
+      ] }] };
+    const { bridge, session, calls } = modelBridge([{ tool: output }]);
+    expect(await bridge.run(session, () => bridge.topicProjector(input))).toEqual(output);
+    const request = calls.mock.calls[0]![0] as any;
+    const payload = JSON.parse(request.messages[0].content[0].text);
+    expect(payload.events.map(({ summary }: EventCard) => summary)).toEqual(input.events.map(({ summary }) => summary));
+    expect(request.system).toContain('章 → 节 → Event');
+    expect(request.system).toContain('单个 bug、版本号、某天进展、一次安装或一个修复方案不能单独成节');
+    expect(request.system).toContain('同一类别可以有多个有来源的段落');
+    expect(request.system).toContain('每批通常只新增 0-2 个节');
+    expect(request.system).toContain('不是全局固定分类表');
+    expect(request.tools[0].parameters.properties.topics.items.properties.overview.items.properties.title.description)
+      .toContain('Lasting category');
+  });
+
   it('supplies all lightweight section labels and requires exact reuse without granting hidden evidence', async () => {
     const input = context();
     input.existingTopics[0]!.sectionTitles = ['范围', '历史', '发布', '设计', '兼容', '界面与交互'];

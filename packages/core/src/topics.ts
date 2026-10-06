@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { bm25Rank, weightedSearchTokens } from './search.js';
 import type { EventCard } from './types.js';
 
-export const MEMORY_TOPIC_PROJECTOR_VERSION = 2;
+export const MEMORY_TOPIC_PROJECTOR_VERSION = 3;
 export const TOPIC_BATCH_LIMIT = 12;
 export const TOPIC_CANDIDATE_LIMIT = 12;
 export const TOPIC_MAX_ATTEMPTS = 3;
@@ -11,7 +11,7 @@ export type MemoryTopicOverviewKind = 'history' | 'decision' | 'change' | 'open-
 
 export interface MemoryTopicOverview {
   kind: MemoryTopicOverviewKind;
-  /** Concrete subject within a broad chapter; optional for existing snapshots. */
+  /** Lasting category within a chapter, not a single Event, version or incident. */
   title?: string;
   text: string;
   sourceEventIds: string[];
@@ -254,15 +254,27 @@ export class MemoryTopicDirectory {
   }
 
   synchronize(events: readonly EventCard[], now: string): void {
+    const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
+    const versions = sourceVersions(sources);
     if ((this.state.bootstrap && this.state.bootstrap.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION)
       || this.state.topics.some((topic) => topic.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION)
       || this.state.jobs.some((job) => job.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION)) {
-      // Replace only the derived generation. Fragmented predecessors must not
-      // remain candidates or repeatedly dirty new projections.
-      this.state = { topics: [], jobs: [], projectedVersions: {} };
+      // V2 already established broad chapters. Rebuild only their section prose
+      // under V3, preserving fresh chapter identities and member order. V1 and
+      // mixed/unknown generations still retire their fragmented derived tree.
+      const fromV2 = (!this.state.bootstrap || this.state.bootstrap.projectorVersion === 2)
+        && this.state.topics.every((topic) => topic.projectorVersion === 2)
+        && this.state.jobs.every((job) => job.projectorVersion === 2);
+      const chapters = fromV2 ? this.state.topics.filter((topic) => !topic.invalidated
+        && topic.title.trim() && topic.description.trim()
+        && topic.sourceEventIds.length > 0
+        && topic.sourceEventIds.every((id) => sources.has(id) && topic.sourceVersions[id] === versions.get(id))
+        && Object.entries(topic.dependencyVersions ?? topic.sourceVersions).every(([id, version]) => versions.get(id) === version))
+        .map((topic) => ({ ...topic, overview: [], projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, updatedAt: now })) : [];
+      // Writer-open Bootstrap freezes visible inputs again. No old projected
+      // success or retry context can bypass its durable database-wide budget.
+      this.state = { topics: chapters, jobs: [], projectedVersions: {} };
     }
-    const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
-    const versions = sourceVersions(sources);
     for (const topic of this.state.topics) {
       if (topic.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
         || Object.entries(topic.dependencyVersions ?? topic.sourceVersions).some(([id, version]) => versions.get(id) !== version)) {
