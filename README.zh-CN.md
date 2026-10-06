@@ -8,22 +8,40 @@
 
 StrataGate 是 DeepSeek Harness 的跨会话记忆插件。近期对话保留细节，较早对话逐渐简化，需要时可以找回原文；重要决定、偏好和计划会整理为长期记忆，供后续会话使用。
 
-[![CI](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml/badge.svg)](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/stratagate-dsh.svg)](https://www.npmjs.com/package/stratagate-dsh)
-[![npm downloads](https://img.shields.io/npm/dt/stratagate-dsh.svg)](https://www.npmjs.com/package/stratagate-dsh)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/diqierjia/StrataGate-AgentMemory?style=social&label=Stars)](https://github.com/diqierjia/StrataGate-AgentMemory/stargazers)
-[![dshfind: StrataGate-AgentMemory — A 73](https://dshfind.com/api/badge/diqierjia/StrataGate-AgentMemory?lang=zh)](https://dshfind.com/zh/plugins/diqierjia/StrataGate-AgentMemory?ref=badge)
-[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
-[![欢迎贡献](https://img.shields.io/badge/%E6%AC%A2%E8%BF%8E%E8%B4%A1%E7%8C%AE-brightgreen.svg)](CONTRIBUTING.zh-CN.md)
-
-[![dshfind](https://dshfind.com/api/card/diqierjia/StrataGate-AgentMemory?lang=zh)](https://dshfind.com/zh/plugins/diqierjia/StrataGate-AgentMemory?ref=badge)
+[![CI](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml/badge.svg)](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/stratagate-dsh.svg)](https://www.npmjs.com/package/stratagate-dsh) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/diqierjia/StrataGate-AgentMemory?style=social&label=Stars)](https://github.com/diqierjia/StrataGate-AgentMemory/stargazers)
 
 [English](README.md) · [DeepSeek Harness 插件说明](docs/DSH.zh-CN.md) · [架构说明](docs/ARCHITECTURE.md) · [完整评测](docs/EVALUATION.md)
 
 <strong>公开评测：</strong>在 LoCoMo 单个对话样本 `conv-26` 的 152 道题上，每个答案经过 10 次独立评审，平均判定正确率为 <strong>80.46%</strong>，Mem0 base 为 <strong>63.22%</strong>。[查看评测范围](#experimental-results)。
 
 </div>
+
+---
+
+<div align="center">
+
+### 社区与下载
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://dshfind.com/zh/plugins/diqierjia/StrataGate-AgentMemory?ref=badge">
+        <img src="https://dshfind.com/api/card/diqierjia/StrataGate-AgentMemory?lang=zh" alt="StrataGate 的 dshfind 收录、评分与累计下载" width="350" />
+      </a>
+    </td>
+    <td align="left">
+      <strong>npm 下载统计</strong><br /><br />
+      <a href="https://www.npmjs.com/package/stratagate-dsh"><img src="https://img.shields.io/npm/dt/stratagate-dsh.svg?label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD" alt="npm 累计下载量" /></a><br />
+      <a href="https://www.npmjs.com/package/stratagate-dsh"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.npmjs.org%2Fdownloads%2Fpoint%2Flast-month%2Fstratagate-dsh&amp;query=%24.downloads&amp;label=%E8%BF%91%2030%20%E5%A4%A9&amp;color=brightgreen" alt="npm 近 30 天下载量" /></a>
+    </td>
+  </tr>
+</table>
+
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com) [![欢迎贡献](https://img.shields.io/badge/%E6%AC%A2%E8%BF%8E%E8%B4%A1%E7%8C%AE-brightgreen.svg)](CONTRIBUTING.zh-CN.md)
+
+</div>
+
+---
 
 ## 为什么选择 StrataGate？
 

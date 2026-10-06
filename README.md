@@ -8,22 +8,40 @@
 
 StrataGate is a cross-session memory plugin for DeepSeek Harness. Recent conversations stay detailed, older conversations become concise, and original records remain available when needed. Important decisions, preferences, and plans become long-term memories for future sessions.
 
-[![CI](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml/badge.svg)](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/stratagate-dsh.svg)](https://www.npmjs.com/package/stratagate-dsh)
-[![npm downloads](https://img.shields.io/npm/dt/stratagate-dsh.svg)](https://www.npmjs.com/package/stratagate-dsh)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/diqierjia/StrataGate-AgentMemory?style=social&label=Stars)](https://github.com/diqierjia/StrataGate-AgentMemory/stargazers)
-[![dshfind: StrataGate-AgentMemory — A 73](https://dshfind.com/api/badge/diqierjia/StrataGate-AgentMemory?lang=en)](https://dshfind.com/en/plugins/diqierjia/StrataGate-AgentMemory?ref=badge)
-[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
-[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
-
-[![dshfind](https://dshfind.com/api/card/diqierjia/StrataGate-AgentMemory?lang=en)](https://dshfind.com/en/plugins/diqierjia/StrataGate-AgentMemory?ref=badge)
+[![CI](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml/badge.svg)](https://github.com/diqierjia/StrataGate-AgentMemory/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/stratagate-dsh.svg)](https://www.npmjs.com/package/stratagate-dsh) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/diqierjia/StrataGate-AgentMemory?style=social&label=Stars)](https://github.com/diqierjia/StrataGate-AgentMemory/stargazers)
 
 [中文说明](README.zh-CN.md) · [DeepSeek Harness guide](docs/DSH.md) · [Architecture](docs/ARCHITECTURE.md) · [Full evaluation](docs/EVALUATION.md)
 
 <strong>Published evaluation:</strong> on 152 questions from one LoCoMo conversation, `conv-26`, each answer received 10 independent evaluations. Mean judged accuracy was <strong>80.46%</strong>, versus <strong>63.22%</strong> for Mem0 base. [See evaluation scope](#experimental-results).
 
 </div>
+
+---
+
+<div align="center">
+
+### Community & downloads
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://dshfind.com/en/plugins/diqierjia/StrataGate-AgentMemory?ref=badge">
+        <img src="https://dshfind.com/api/card/diqierjia/StrataGate-AgentMemory?lang=en" alt="StrataGate on dshfind: rating and cumulative downloads" width="350" />
+      </a>
+    </td>
+    <td align="left">
+      <strong>npm downloads</strong><br /><br />
+      <a href="https://www.npmjs.com/package/stratagate-dsh"><img src="https://img.shields.io/npm/dt/stratagate-dsh.svg?label=total%20downloads" alt="Total npm downloads" /></a><br />
+      <a href="https://www.npmjs.com/package/stratagate-dsh"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.npmjs.org%2Fdownloads%2Fpoint%2Flast-month%2Fstratagate-dsh&amp;query=%24.downloads&amp;label=last%2030%20days&amp;color=brightgreen" alt="npm downloads in the last 30 days" /></a>
+    </td>
+  </tr>
+</table>
+
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com) [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+</div>
+
+---
 
 ## Why StrataGate?
 
