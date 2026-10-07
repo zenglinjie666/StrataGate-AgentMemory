@@ -140,6 +140,50 @@ describe('read-only Topic Directory admin data', () => {
     expect(JSON.stringify(response.body)).not.toContain('sourceEventIds');
   });
 
+  it('counts A and B backfill relations separately through failure, B success, restart and manual A retry', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = [event('shared')];
+    const state = freeze(snapshot.events), chapterA = topic('chapter-a', snapshot.events), chapterB = topic('chapter-b', snapshot.events);
+    chapterA.overview = []; chapterB.overview = [];
+    state.topics = [chapterA, chapterB]; state.projectedVersions = versions(snapshot.events);
+    delete state.sectionMembershipVersion;
+    let directory = new MemoryTopicDirectory(); directory.restore(state); directory.initializeBootstrap(snapshot.events, now);
+    let clock = Date.parse(now), failedJob = '';
+    for (let i = 0; i < 3; i++) {
+      const context = directory.claim(snapshot.events, new Date(clock).toISOString(), 'bootstrap')!;
+      expect(context.sectionBackfillTopicId).toBe('chapter-a');
+      failedJob = context.jobId; directory.fail(failedJob, new Error('invalid sections'), new Date(clock).toISOString());
+      clock += 120_000;
+    }
+    snapshot.memoryTopicState = directory.snapshot();
+    const pendingB = (await request(fakeRuntime(snapshot))).body.bootstrap;
+    expect(pendingB).toMatchObject({ status: 'running', total: 1, completed: 0, failedEvents: 1,
+      sectionBackfill: { pendingRelations: 2, failedRelations: 1 }, failures: [{ jobId: failedJob, eventCount: 1 }] });
+    expect((await request(fakeRuntime(snapshot), 'dashboard')).body.processing).toBe(true);
+    const repair = (context: NonNullable<ReturnType<MemoryTopicDirectory['claim']>>) => ({ topics: [{
+      topicId: context.sectionBackfillTopicId!, title: '学术资料', description: '资料', sourceEventIds: ['shared'],
+      overview: [], sections: [{ title: '研究方向', sourceEventIds: ['shared'] }],
+    }] });
+    const contextB = directory.claim(snapshot.events, new Date(clock).toISOString(), 'bootstrap')!;
+    expect(contextB.sectionBackfillTopicId).toBe('chapter-b');
+    directory.complete(contextB.jobId, repair(contextB), snapshot.events, new Date(clock).toISOString());
+    snapshot.memoryTopicState = directory.snapshot();
+    const failedA = (await request(fakeRuntime(snapshot))).body.bootstrap;
+    expect(failedA).toMatchObject({ status: 'failed', total: 1, completed: 0, failedEvents: 1,
+      sectionBackfill: { pendingRelations: 1, failedRelations: 1 } });
+    expect((await request(fakeRuntime(snapshot), 'dashboard')).body.processing).toBe(false);
+    directory = new MemoryTopicDirectory(); directory.restore(snapshot.memoryTopicState);
+    directory.initializeBootstrap(snapshot.events, new Date(clock).toISOString()); snapshot.memoryTopicState = directory.snapshot();
+    expect((await request(fakeRuntime(snapshot))).body.bootstrap).toEqual(failedA);
+    directory.retry(failedJob, snapshot.events, new Date(clock).toISOString()); snapshot.memoryTopicState = directory.snapshot();
+    expect((await request(fakeRuntime(snapshot))).body.bootstrap).toMatchObject({ status: 'running', failedEvents: 0,
+      sectionBackfill: { pendingRelations: 1, failedRelations: 0 } });
+    const contextA = directory.claim(snapshot.events, new Date(clock).toISOString(), 'bootstrap')!;
+    directory.complete(contextA.jobId, repair(contextA), snapshot.events, new Date(clock).toISOString());
+    snapshot.memoryTopicState = directory.snapshot();
+    expect((await request(fakeRuntime(snapshot))).body.bootstrap).toMatchObject({ status: 'completed', total: 1, completed: 1, failedEvents: 0,
+      sectionBackfill: { pendingRelations: 0, failedRelations: 0 } });
+  });
+
   it('does not recreate an orphan overview section in the directory or paging after reclassification', async () => {
     const snapshot = emptySnapshot(); snapshot.events = [event('moved')];
     const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);

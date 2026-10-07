@@ -511,21 +511,28 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
   const frozen = state.bootstrap?.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION ? state.bootstrap : null
   // Changed, forgotten, archived or disabled-lane sources no longer belong to
   // this frozen history. Failures are never counted as successful completions.
-  const backfillVersions = Object.fromEntries(Object.values(state.sectionBackfill ?? {}).flatMap((pending) => Object.entries(pending)))
-  const budgetedVersions = { ...(frozen?.sourceVersions ?? {}), ...state.rebuildVersions, ...backfillVersions }
+  const relationKey = (topicId: string | undefined, id: string, version: string) => JSON.stringify([topicId ?? null, id, version])
+  const backfillRelations = Object.entries(state.sectionBackfill ?? {}).flatMap(([topicId, pending]) =>
+    Object.entries(pending).filter(([id, version]) => versions.get(id) === version)
+      .map(([id, version]) => ({ topicId, id, version })))
+  const budgetedVersions = { ...(frozen?.sourceVersions ?? {}), ...state.rebuildVersions }
   const history = frozen ? Object.entries(budgetedVersions)
     .filter(([id, version]) => versions.get(id) === version) : []
-  const outstanding = new Set(history.filter(([id, version]) => state.projectedVersions[id] !== version
-    || backfillVersions[id] === version)
-    .map(([id]) => id))
+  const ordinaryOutstanding = history.filter(([id, version]) => state.projectedVersions[id] !== version)
+  const outstanding = new Set([...ordinaryOutstanding.map(([id]) => id), ...backfillRelations.map(({ id }) => id)])
+  const outstandingWork = new Set([...ordinaryOutstanding.map(([id, version]) => relationKey(undefined, id, version)),
+    ...backfillRelations.map(({ topicId, id, version }) => relationKey(topicId, id, version))])
+  const failedWork = new Set<string>()
   const failures = state.jobs.flatMap((job) => {
     if (job.superseded || job.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
       || job.status !== 'failed' || job.attempts < TOPIC_MAX_ATTEMPTS
       || !Object.entries({ ...job.sourceVersions, ...job.dependencyVersions })
         .every(([id, version]) => versions.get(id) === version)) return []
-    const ids = job.sourceEventIds.filter((id) => outstanding.has(id)
-      && budgetedVersions[id] === job.sourceVersions[id]
-      && (!job.sectionBackfillTopicId || state.sectionBackfill?.[job.sectionBackfillTopicId]?.[id] === job.sourceVersions[id]))
+    const ids = job.sourceEventIds.filter((id) => {
+      const key = relationKey(job.sectionBackfillTopicId, id, job.sourceVersions[id]!)
+      if (!outstandingWork.has(key)) return false
+      failedWork.add(key); return true
+    })
     return ids.length > 0 ? [{
       jobId: job.id, eventIds: ids, attempts: job.attempts,
       // Topic failures store reason codes, never raw model output.
@@ -534,13 +541,17 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
       updatedAt: job.updatedAt,
     }] : []
   })
+  const total = new Set([...history.map(([id]) => id), ...backfillRelations.map(({ id }) => id)]).size
+  const failedRelations = backfillRelations.filter(({ topicId, id, version }) => failedWork.has(relationKey(topicId, id, version))).length
   const bootstrap = frozen ? {
-    status: Object.keys(state.rebuildVersions ?? {}).length > 0 || Object.keys(backfillVersions).length > 0
-      ? (outstanding.size === new Set(failures.flatMap(({ eventIds }) => eventIds)).size ? 'completed' : 'running')
+    status: backfillRelations.length > 0 && outstandingWork.size === failedWork.size ? 'failed'
+      : Object.keys(state.rebuildVersions ?? {}).length > 0 || backfillRelations.length > 0
+      ? (outstandingWork.size === failedWork.size ? 'completed' : 'running')
       : frozen.status,
-    total: history.length,
-    completed: history.length - outstanding.size,
+    total,
+    completed: total - outstanding.size,
     failedEvents: new Set(failures.flatMap(({ eventIds }) => eventIds)).size,
+    sectionBackfill: { pendingRelations: backfillRelations.length, failedRelations },
     failures,
   } : null
   // Failure pages are directory scopes too: a job-only change must invalidate
@@ -1664,7 +1675,7 @@ async function dashboard(runtime: StrataGateRuntime, url: URL, ifNoneMatch: stri
       overview: overviewValue,
       processing: Number(selectedOverview?.processingJobs ?? 0) > 0
         || (topicDirectoryData.bootstrap !== null && topicDirectoryData.bootstrap.total > 0
-          && topicDirectoryData.bootstrap.status !== 'completed'),
+          && (topicDirectoryData.bootstrap.status === 'pending' || topicDirectoryData.bootstrap.status === 'running')),
       data: {
         events: eventResult.items ?? [],
         graph: graphResult,

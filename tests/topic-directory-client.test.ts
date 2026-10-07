@@ -820,6 +820,19 @@ describe('Topic Directory client interactions', () => {
     expect(tree.text).toContain('不影响正常使用，未整理记忆仍可正常检索')
   })
 
+  it.each(['running', 'failed'])('shows outstanding chapter relations and retry warnings for %s', (status) => {
+    const client = clientRenderer(), directory = fixture();
+    directory.bootstrap = { ...directory.bootstrap, status, total: 1, completed: 0, failedEvents: 1,
+      sectionBackfill: { pendingRelations: status === 'running' ? 2 : 1, failedRelations: 1 },
+      failures: [{ jobId: 'failed-a', eventCount: 1, attempts: 3 }],
+    } as any;
+    const tree = client.render(client.TopicDirectory, { directory, openEvent: vi.fn() });
+    expect(tree.text).toContain('仍有 ' + (status === 'running' ? 2 : 1) + ' 项小节归属待补齐，其中 1 项需要重新整理');
+    expect(tree.text).toContain('1 条历史记忆暂未完成整理');
+    expect(tree.text).not.toContain('整理完成');
+    expect(buttons(tree, '重新整理这 1 条')).toHaveLength(1);
+  });
+
   it('removes completed successful/empty bootstrap notices and loads failure titles only on inspection', async () => {
     const client = clientRenderer(true)
     const props = { directory: fixture(), namespace: 'dsh:project:test', openEvent: vi.fn() }

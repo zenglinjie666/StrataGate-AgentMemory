@@ -132,6 +132,70 @@ describe('one-time section membership backfill', () => {
     expect(JSON.stringify(context).length).toBeLessThan(30_000);
   });
 
+  it('isolates an exhausted A relation from B for the same Event, persists restart and manually repairs A', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'topic-relation-failure-'));
+    const database = join(root, 'memory.db'), namespace = 'project:relation-failure';
+    const snapshot = await legacySnapshot(2), state = snapshot.memoryTopicState!, chapterA = state.topics[0]!;
+    state.topics.push({ ...structuredClone(chapterA), id: 'chapter-b', title: '学术资料',
+      sourceEventIds: ['old-1'], overview: [], sections: [] });
+    let clock = Date.now();
+    const open = () => StrataGate.open({ ...options, database, namespace, now: () => new Date(clock) });
+    let memory: StrataGate | undefined;
+    try {
+      const storage = new SqliteStorage({ filename: database });
+      await storage.save(namespace, snapshot, 0); await storage.close();
+      memory = await open(); let failedJob = '';
+      for (let i = 0; i < 3; i++) {
+        const context = (await memory.claimNextTopicProjection('bootstrap'))!;
+        expect(context.sectionBackfillTopicId).toBe(chapterA.id);
+        failedJob = context.jobId; await memory.failTopicProjection(failedJob, new Error('invalid sections'));
+        clock += 120_000;
+      }
+      await memory.close(); memory = await open();
+      expect(memory.hasPendingTopicWork('bootstrap')).toBe(true);
+      expect(memory.hasPendingTopicWork('incremental')).toBe(false);
+      const contextB = (await memory.claimNextTopicProjection('bootstrap'))!;
+      expect(contextB.sectionBackfillTopicId).toBe('chapter-b');
+      expect(contextB.events.map(({ id }) => id)).toEqual(['old-1']);
+      await memory.completeTopicProjection(contextB.jobId, repair(contextB));
+      expect(memory.hasPendingTopicWork()).toBe(false);
+      expect(await memory.claimNextTopicProjection('bootstrap')).toBeNull();
+      expect(memory.exportSnapshot().memoryTopicState!.sectionBackfill).toEqual({
+        [chapterA.id]: { 'old-1': state.projectedVersions['old-1']! },
+      });
+      const beforeRestart = memory.exportSnapshot().memoryTopicState;
+      await memory.close(); memory = await open();
+      expect(memory.exportSnapshot().memoryTopicState).toEqual(beforeRestart);
+      expect(memory.hasPendingTopicWork()).toBe(false);
+      expect(memory.listTopicProjectionJobs().find(({ id }) => id === failedJob)).toMatchObject({ attempts: 3, status: 'failed', nextRetryAt: null });
+      const retry = await memory.retryTopicProjection(failedJob);
+      await expect(memory.retryTopicProjection(failedJob)).rejects.toThrow(/retry conflict/);
+      const contextA = (await memory.claimNextTopicProjection('bootstrap'))!;
+      expect(contextA.jobId).toBe(retry.jobId); expect(contextA.sectionBackfillTopicId).toBe(chapterA.id);
+      await memory.completeTopicProjection(contextA.jobId, repair(contextA));
+      expect(memory.exportSnapshot().memoryTopicState!.sectionBackfill).toEqual({});
+      expect(Object.fromEntries(memory.listMemoryTopics().filter(({ isFallback }) => !isFallback).map(({ id, sections }) =>
+        [id, sections!.flatMap(({ sourceEventIds }) => sourceEventIds)]))).toEqual({ [chapterA.id]: ['old-0', 'old-1'], 'chapter-b': ['old-1'] });
+      expect(memory.exportSnapshot().events).toEqual(snapshot.events);
+    } finally { await memory?.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('lets B run while A is awaiting retry, without bypassing A backoff', async () => {
+    const snapshot = await legacySnapshot(2), state = snapshot.memoryTopicState!, chapterA = state.topics[0]!;
+    state.topics.push({ ...structuredClone(chapterA), id: 'chapter-b', title: '学术资料',
+      sourceEventIds: ['old-1'], overview: [], sections: [] });
+    const directory = new MemoryTopicDirectory(); directory.restore(state); const now = new Date().toISOString();
+    directory.initializeBootstrap(snapshot.events, now);
+    const first = directory.claim(snapshot.events, now, 'bootstrap')!;
+    directory.fail(first.jobId, new Error('invalid sections'), now);
+    const next = directory.claim(snapshot.events, now, 'bootstrap')!;
+    expect(next.sectionBackfillTopicId).toBe('chapter-b');
+    directory.complete(next.jobId, repair(next), snapshot.events, now);
+    expect(directory.claim(snapshot.events, now, 'bootstrap')).toBeNull();
+    expect(directory.hasPending(snapshot.events, Date.parse(now), 'bootstrap')).toBe(false);
+    expect(directory.hasPending(snapshot.events, Date.parse(now) + 30_000, 'bootstrap')).toBe(true);
+  });
+
   it('rejects chapter moves and legacy empty-overview completions atomically', async () => {
     const snapshot = await legacySnapshot(), directory = new MemoryTopicDirectory();
     directory.restore(snapshot.memoryTopicState); const now = new Date().toISOString();

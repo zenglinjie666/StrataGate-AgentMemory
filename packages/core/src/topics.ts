@@ -413,38 +413,41 @@ export class MemoryTopicDirectory {
     }
   }
 
-  private pendingEvents(events: readonly EventCard[]): EventCard[] {
+  private pendingWork(events: readonly EventCard[]): Array<{ event: EventCard; sectionBackfillTopicId?: string }> {
     const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
     const versions = sourceVersions(sources);
     const dirtyIds = new Set(this.state.topics.filter((topic) => topic.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
       || Object.entries(topic.dependencyVersions ?? topic.sourceVersions).some(([id, version]) => versions.get(id) !== version))
       .flatMap((topic) => topic.sourceEventIds));
-    return events.filter(visible).filter((event) => {
+    const blocked = (id: string, version: string, topicId?: string): boolean => this.state.jobs.some((job) =>
+      !job.superseded && job.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION
+      && job.sectionBackfillTopicId === topicId && job.sourceVersions[id] === version
+      && jobInputsCurrent(job, versions)
+      && (job.status === 'running' || job.status === 'pending'
+        || (job.status === 'failed' && (job.attempts >= TOPIC_MAX_ATTEMPTS || job.nextRetryAt !== null))));
+    return events.filter(visible).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).flatMap((event) => {
       const version = versions.get(event.id)!;
-      if (this.state.projectedVersions[event.id] === version && !dirtyIds.has(event.id)
-        && !this.backfillTopic(event.id, version)) return false;
-      return !this.state.jobs.some((job) => !job.superseded && job.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION
-        && job.sourceVersions[event.id] === version
-        && jobInputsCurrent(job, versions)
-        && (job.status === 'running' || job.status === 'pending'
-          || (job.status === 'failed' && (job.attempts >= TOPIC_MAX_ATTEMPTS || job.nextRetryAt !== null))));
-    }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+      const work: Array<{ event: EventCard; sectionBackfillTopicId?: string }> = [];
+      if ((this.state.projectedVersions[event.id] !== version || dirtyIds.has(event.id)) && !blocked(event.id, version)) {
+        work.push({ event });
+      }
+      // A retry ledger settles one chapter relation, never the entire Event.
+      for (const [topicId, pending] of Object.entries(this.state.sectionBackfill ?? {})) {
+        if (pending[event.id] === version && !blocked(event.id, version, topicId)) work.push({ event, sectionBackfillTopicId: topicId });
+      }
+      return work;
+    });
   }
 
-  private isBootstrap(id: string, version: string): boolean {
+  private isBootstrap(id: string, version: string, sectionBackfillTopicId?: string): boolean {
     const bootstrap = this.state.bootstrap;
-    return !!this.backfillTopic(id, version) || this.state.rebuildVersions?.[id] === version
+    return sectionBackfillTopicId !== undefined || this.state.rebuildVersions?.[id] === version
       || !bootstrap || bootstrap.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
       || (bootstrap.status !== 'completed' && bootstrap.sourceVersions[id] === version);
   }
 
-  private backfillTopic(id: string, version: string): string | undefined {
-    return Object.keys(this.state.sectionBackfill ?? {}).find((topicId) =>
-      this.state.sectionBackfill![topicId]![id] === version);
-  }
-
-  private matchesMode(ids: readonly string[], versions: ReadonlyMap<string, string>, mode: TopicProjectionMode): boolean {
-    return mode === 'all' || ids.some((id) => this.isBootstrap(id, versions.get(id)!) === (mode === 'bootstrap'));
+  private matchesMode(ids: readonly string[], versions: ReadonlyMap<string, string>, mode: TopicProjectionMode, sectionBackfillTopicId?: string): boolean {
+    return mode === 'all' || ids.some((id) => this.isBootstrap(id, versions.get(id)!, sectionBackfillTopicId) === (mode === 'bootstrap'));
   }
 
   hasPending(events: readonly EventCard[], now: number, mode: TopicProjectionMode = 'all'): boolean {
@@ -453,11 +456,11 @@ export class MemoryTopicDirectory {
     const running = this.state.jobs.find((job) => job.status === 'running');
     if (running) return Date.parse(running.leaseUntil ?? running.updatedAt) <= now
       || !jobInputsCurrent(running, versions);
-    return this.pendingEvents(events).some((event) => this.matchesMode([event.id], versions, mode)) || this.state.jobs.some((job) =>
+    return this.pendingWork(events).some(({ event, sectionBackfillTopicId }) => this.matchesMode([event.id], versions, mode, sectionBackfillTopicId)) || this.state.jobs.some((job) =>
       !job.superseded && job.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION && job.attempts < TOPIC_MAX_ATTEMPTS
       && (job.status === 'pending' || (job.status === 'failed'
         && job.nextRetryAt !== null && Date.parse(job.nextRetryAt) <= now))
-      && jobInputsCurrent(job, versions) && this.matchesMode(job.sourceEventIds, versions, mode));
+      && jobInputsCurrent(job, versions) && this.matchesMode(job.sourceEventIds, versions, mode, job.sectionBackfillTopicId));
   }
 
   claim(events: readonly EventCard[], now: string, mode: TopicProjectionMode = 'all'): TopicProjectionContext | null {
@@ -473,12 +476,13 @@ export class MemoryTopicDirectory {
     const eligible = this.state.jobs.filter((job) => !job.superseded && job.attempts < TOPIC_MAX_ATTEMPTS
       && (job.status === 'pending' || (job.status === 'failed' && job.nextRetryAt !== null
         && Date.parse(job.nextRetryAt) <= Date.parse(now)))
-      && jobInputsCurrent(job, versions) && this.matchesMode(job.sourceEventIds, versions, mode))
-      .sort((a, b) => Number(this.isBootstrap(a.sourceEventIds[0]!, versions.get(a.sourceEventIds[0]!)!))
-        - Number(this.isBootstrap(b.sourceEventIds[0]!, versions.get(b.sourceEventIds[0]!)!)))[0];
+      && jobInputsCurrent(job, versions) && this.matchesMode(job.sourceEventIds, versions, mode, job.sectionBackfillTopicId))
+      .sort((a, b) => Number(this.isBootstrap(a.sourceEventIds[0]!, versions.get(a.sourceEventIds[0]!)!, a.sectionBackfillTopicId))
+        - Number(this.isBootstrap(b.sourceEventIds[0]!, versions.get(b.sourceEventIds[0]!)!, b.sectionBackfillTopicId)))[0];
     let job = eligible;
-    if (job && this.isBootstrap(job.sourceEventIds[0]!, versions.get(job.sourceEventIds[0]!)!)
-      && mode === 'all' && this.pendingEvents(events).some((event) => !this.isBootstrap(event.id, versions.get(event.id)!))) job = undefined;
+    if (job && this.isBootstrap(job.sourceEventIds[0]!, versions.get(job.sourceEventIds[0]!)!, job.sectionBackfillTopicId)
+      && mode === 'all' && this.pendingWork(events).some(({ event, sectionBackfillTopicId }) =>
+        !this.isBootstrap(event.id, versions.get(event.id)!, sectionBackfillTopicId))) job = undefined;
     if (job?.status === 'failed') {
       // Each attempt owns a new id, so a delayed reply from an expired lease
       // cannot complete a later claimant's job.
@@ -492,18 +496,18 @@ export class MemoryTopicDirectory {
       this.state.jobs.push(job);
     }
     if (!job) {
-      const pending = this.pendingEvents(events).filter((event) => this.matchesMode([event.id], versions, mode))
-        .sort((a, b) => Number(this.isBootstrap(a.id, versions.get(a.id)!)) - Number(this.isBootstrap(b.id, versions.get(b.id)!)))
-        .filter((event) => !this.state.jobs.some((candidate) =>
-        candidate.status === 'failed' && candidate.attempts < TOPIC_MAX_ATTEMPTS
-        && candidate.nextRetryAt !== null && candidate.sourceVersions[event.id] === versions.get(event.id)));
+      const pending = this.pendingWork(events).filter(({ event, sectionBackfillTopicId }) =>
+        this.matchesMode([event.id], versions, mode, sectionBackfillTopicId))
+        .sort((a, b) => Number(this.isBootstrap(a.event.id, versions.get(a.event.id)!, a.sectionBackfillTopicId))
+          - Number(this.isBootstrap(b.event.id, versions.get(b.event.id)!, b.sectionBackfillTopicId)));
       // Never mix a new incremental source into a historical budgeted batch.
       const first = pending[0];
-      const backfillTopicId = first ? this.backfillTopic(first.id, versions.get(first.id)!) : undefined;
-      const sameKind = pending.filter((event) => first && this.isBootstrap(event.id, versions.get(event.id)!)
-        === this.isBootstrap(first.id, versions.get(first.id)!)
-        && (backfillTopicId ? this.state.sectionBackfill![backfillTopicId]![event.id] === versions.get(event.id)
-          : !this.backfillTopic(event.id, versions.get(event.id)!))).slice(0, TOPIC_BATCH_LIMIT);
+      const backfillTopicId = first?.sectionBackfillTopicId;
+      const sameKind = pending.filter(({ event, sectionBackfillTopicId }) => first
+        && sectionBackfillTopicId === backfillTopicId
+        && this.isBootstrap(event.id, versions.get(event.id)!, sectionBackfillTopicId)
+          === this.isBootstrap(first.event.id, versions.get(first.event.id)!, backfillTopicId))
+        .slice(0, TOPIC_BATCH_LIMIT).map(({ event }) => event);
       const batch: EventCard[] = [];
       let eventBudget = 16_000;
       for (const event of sameKind) {
@@ -580,7 +584,7 @@ export class MemoryTopicDirectory {
       ])]);
     job.dependencyVersions = Object.fromEntries(dependencyIds.map((id) => [id, versions.get(id)!]));
     job.status = 'running'; job.attempts += 1; job.lastError = null; job.nextRetryAt = null; job.updatedAt = now;
-    if (this.state.bootstrap.status === 'pending' && this.matchesMode(job.sourceEventIds, versions, 'bootstrap')) {
+    if (this.state.bootstrap.status === 'pending' && this.matchesMode(job.sourceEventIds, versions, 'bootstrap', job.sectionBackfillTopicId)) {
       this.state.bootstrap.status = 'running';
     }
     job.leaseUntil = new Date(Date.parse(now) + TOPIC_LEASE_MS).toISOString();
