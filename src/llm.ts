@@ -31,7 +31,7 @@ import type {
   TopicProjectionResult,
   TopicProjector,
 } from '@diqier/stratagate'
-import { buildMemoryDerivationMessages, estimateTokens, EVENT_EXTRACTOR_VERSION, EXTERNAL_MEMORY_DECIDER_PROMPT_ZH_CN, nowUtc8, normalizeEventMetadata, normalizeEventTemporal, parseExternalMemoryExport } from '@diqier/stratagate'
+import { buildMemoryDerivationMessages, estimateTokens, EVENT_EXTRACTOR_VERSION, EXTERNAL_MEMORY_DECIDER_PROMPT_ZH_CN, memoryTopicMembershipSections, memoryTopicOverviewMatchesSection, nowUtc8, normalizeEventMetadata, normalizeEventTemporal, parseExternalMemoryExport } from '@diqier/stratagate'
 import { PROFILE_FIELDS, PROFILE_PROTECTED_SHORT_FIELDS, validateProfile, type PersistentProfile } from '@diqier/stratagate'
 import type { ResolvedConfig, StructuredReasoningEffortMode } from './config.js'
 import { dshMessageSource } from './dsh-compatibility.js'
@@ -261,7 +261,7 @@ const TOPIC_OVERVIEW: ValueSchemaSpec = {
   type: 'object', additionalProperties: false,
   properties: {
     kind: { type: 'string', enum: TOPIC_OVERVIEW_KINDS, required: true },
-    title: { type: 'string', description: 'Lasting category inside the chapter, e.g. defect diagnosis and fixes, releases and installation, or architecture decisions. Never a single Event, bug, version, date or task title; at most 80 characters.' },
+    title: { type: 'string', description: 'Lasting category inside the chapter. Must match a declared or inherited section title; if omitted, the kind default must match one. Never a single Event, bug, version, date or task title; at most 80 characters.' },
     text: { type: 'string', description: 'Source-grounded scope, historical progress, decision, change, or unresolved question; preserve time, uncertainty, plans, cancellation, and disputes.', required: true },
     sourceEventIds: { ...STRING_ARRAY, required: true },
   },
@@ -304,7 +304,7 @@ Topic 是长期的大章节，按项目、生活领域或长期关系组织，�
 
 title 是可识别的主题名称；description 用一句话说明这里存有哪些资料，例如“包含部署选型、迁移经过和遗留问题”，不要把历史结论写成当前事实。overview 的 kind 仅允许 scope（背景或覆盖范围）、history（历史进展）、decision（当时的决定）、change（有依据的变化）、open-question（待确认事项）。保留明确时点、过去式、计划、取消、争议和不确定性；没有新的支持不能把旧事实升格为当前结论，不能把计划写成已完成、建议写成已决定、推测写成原因。决定曾经成立不等于现在仍有效。相关事件矛盾时保留矛盾和待确认状态。
 
-sections 独立保存事件的小节归属，与 overview 的来源引用分开。每个归入本章的本批事件必须至少分配到一个 sections 小节，即使总览没有引用它。sections 只写本批事件编号；旧归属由存储层继承。优先逐字复用 existingTopics.sectionTitles 中适合的标题；小节沿用上述长期类别规则。overview.title 只决定概括文字显示在哪个小节，不决定事件归属；无需为每条事件写总览，也不要为了覆盖目录而虚增来源引用。
+sections 独立保存事件的小节归属，与 overview 的来源引用分开。每个归入本章的本批事件必须至少分配到一个 sections 小节，即使总览没有引用它。sections 只写本批事件编号；旧归属由存储层继承。优先逐字复用 existingTopics.sectionTitles 中适合的标题；小节沿用上述长期类别规则。新 overview 的展示标题必须匹配本轮 sections.title 或已有小节标题，不能靠总览单独创建小节；省略 title 时，其 kind 的默认展示标题也必须已有对应小节。有效旧段可原样保留。overview.title 只决定概括文字显示在哪个小节，不决定事件归属；无需为每条事件写总览，也不要为了覆盖目录而虚增来源引用。
 
 outputTokenBudget 是整个响应的输出预算。优先完整分配本批所有事件到章节和小节，再写必要的简短名称、范围说明和新增段。存储层会自动继承有效旧概要，无需输出复述；通常只需 0-2 段新增概要，预算不足时 overview 可为空，sections 仍必须完整归类本批事件，不截断 JSON 或遗漏事件。
 每批最多 12 个主题；title 最多 120 个字符，description 最多 400 个字符，但尽量用短名称和一句范围说明；每个主题在本次响应最多 8 段概要；这不是累计章节的段数或节数上限，有效旧段由存储层保留。每段最多 600 个字符、12 个来源。不要重复标题、目录说明、已有概要或无关背景。不要生成经验层或另写新的事件。`
@@ -551,6 +551,8 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
     const assigned = new Set(sections.flatMap((section) => section.sourceEventIds))
     if (sources.some((id) => eventIds.has(id) && !assigned.has(id))) fail('every topic batch Event must be assigned to a section')
     if (!Array.isArray(item.overview) || item.overview.length > 8) fail('overview must contain 0-8 source-grounded entries')
+    const overviewTitles = [...sections.map((section) => section.title),
+      ...(existing?.sectionTitles ?? memoryTopicMembershipSections(existing ?? { overview: [] }).map((section) => section.title))]
     const overview: MemoryTopicOverview[] = (item.overview as unknown[]).map((candidateEntry) => {
       const entry = object(candidateEntry)
       if (Object.keys(entry).some((key) => !['kind', 'title', 'text', 'sourceEventIds'].includes(key))) fail('unexpected overview field')
@@ -559,12 +561,15 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
       const paragraph = boundedText(entry.text, 'overview.text', 600)
       const paragraphSources = sourceIds(entry.sourceEventIds, 'overview.sourceEventIds', new Set(sources), 12)
       if (entry.kind !== 'scope' && paragraphSources.some((id) => truncatedIds.has(id))) fail('truncated Event evidence may only support scope entries')
-      if (paragraphSources.some((id) => !eventIds.has(id)) && !existing?.overview.some((old) =>
+      const preserved = existing?.overview.some((old) =>
         old.kind === entry.kind && old.title === sectionTitle && old.text === paragraph && old.sourceEventIds.length === paragraphSources.length
-        && old.sourceEventIds.every((id) => paragraphSources.includes(id)))) {
+        && old.sourceEventIds.every((id) => paragraphSources.includes(id)))
+      if (paragraphSources.some((id) => !eventIds.has(id)) && !preserved) {
         fail('old overview evidence may only be preserved verbatim; rewritten entries must cite batch Events only')
       }
-      return { kind: entry.kind as MemoryTopicOverviewKind, ...(sectionTitle === undefined ? {} : { title: sectionTitle }), text: paragraph, sourceEventIds: paragraphSources }
+      const part: MemoryTopicOverview = { kind: entry.kind as MemoryTopicOverviewKind, ...(sectionTitle === undefined ? {} : { title: sectionTitle }), text: paragraph, sourceEventIds: paragraphSources }
+      if (!preserved && !memoryTopicOverviewMatchesSection(part, overviewTitles)) fail('new overview must match a declared or inherited section')
+      return part
     })
     return {
       ...(topicId === undefined ? {} : { topicId }),

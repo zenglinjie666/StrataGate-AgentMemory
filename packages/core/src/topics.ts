@@ -155,6 +155,12 @@ export function memoryTopicSectionTitle(part: MemoryTopicOverview): string {
 }
 const normalizedLabel = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 
+/** New prose may attach to a directory section, never create one by itself. */
+export function memoryTopicOverviewMatchesSection(part: MemoryTopicOverview, titles: readonly string[]): boolean {
+  const display = normalizedLabel(memoryTopicSectionTitle(part));
+  return titles.some((title) => normalizedLabel(title) === display);
+}
+
 /** Legacy evidence provides known memberships; explicit memberships never
  * depend on whether a summary still cites the Event. */
 export function memoryTopicMembershipSections(topic: Pick<MemoryTopic, 'overview' | 'sections'>): MemoryTopicSection[] {
@@ -612,6 +618,16 @@ export class MemoryTopicDirectory {
       }
       if (proposal.sections !== undefined && ids.some((eventId) => batchIds.has(eventId)
         && !assignments.some((section) => section.sourceEventIds.includes(eventId)))) throw new Error('Topic sections omitted batch events.');
+      if (proposal.sections !== undefined) {
+        const inheritedSections = existing && !existing.invalidated ? memoryTopicMembershipSections(existing) : [];
+        const titles = [...assignments, ...inheritedSections].map((section) => section.title);
+        for (const part of proposal.overview) {
+          const preserved = existing && !existing.invalidated && existing.overview.some((old) => digest(old) === digest(part));
+          if (!preserved && !memoryTopicOverviewMatchesSection(part, titles)) {
+            throw new Error('New topic overview must match a declared or inherited section.');
+          }
+        }
+      }
       const membership = unique([...(existing?.sourceEventIds ?? []).filter((eventId) => sources.has(eventId)), ...ids]);
       const inherited = existing && !existing.invalidated ? existing.overview : [];
       const overview = unique(proposal.overview.map((part) => JSON.stringify(part))).map((part) => JSON.parse(part) as MemoryTopicOverview);

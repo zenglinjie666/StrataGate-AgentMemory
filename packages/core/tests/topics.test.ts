@@ -132,6 +132,56 @@ describe('rebuildable Event-backed topic directory', () => {
     expect(memory.exportSnapshot()).toEqual(before);
   });
 
+  it.each(['unnamed', 'unknown-title'] as const)('rejects %s new overview without a declared section atomically', async (invalid) => {
+    const memory = StrataGate.inMemory(options); const [event] = await seed(memory);
+    const job = (await memory.claimNextTopicProjection())!; const before = memory.exportSnapshot();
+    const paragraph = { kind: 'open-question' as const, text: '迁移待确认。', sourceEventIds: [event!.id],
+      ...(invalid === 'unknown-title' ? { title: '不存在的小节' } : {}) };
+    await expect(memory.completeTopicProjection(job.jobId, { topics: [{ title: '数据库', description: '资料',
+      sourceEventIds: [event!.id], sections: [{ title: '数据库与迁移', sourceEventIds: [event!.id] }], overview: [paragraph],
+    }] })).rejects.toThrow(/overview.*section/i);
+    expect(memory.exportSnapshot()).toEqual(before);
+  });
+
+  it.each(['named', 'default-kind', 'normalized'] as const)('accepts %s overview mapped to a declared section', async (mode) => {
+    const memory = StrataGate.inMemory(options); const [event] = await seed(memory); const job = (await memory.claimNextTopicProjection())!;
+    const paragraph = { kind: 'open-question' as const, text: '迁移待确认。', sourceEventIds: [event!.id],
+      ...(mode === 'named' ? { title: '数据库与迁移' } : mode === 'normalized' ? { title: 'ＡＩ　研究' } : {}) };
+    const title = mode === 'default-kind' ? '尚未解决的问题' : mode === 'normalized' ? 'ai  研究' : '数据库与迁移';
+    const { topicIds: [id] } = await memory.completeTopicProjection(job.jobId, { topics: [{ title: '数据库', description: '资料',
+      sourceEventIds: [event!.id], sections: [{ title, sourceEventIds: [event!.id] }], overview: [paragraph],
+    }] });
+    expect(memory.getMemoryTopic(id!)!.overview).toEqual([paragraph]);
+    expect(memory.getMemoryTopic(id!)!.sections).toEqual([{ title, sourceEventIds: [event!.id] }]);
+  });
+
+  it('accepts new overview in an inherited section without changing the new Event membership', async () => {
+    const memory = StrataGate.inMemory(options); const [old] = await seed(memory); const initial = (await memory.claimNextTopicProjection())!;
+    const { topicIds: [id] } = await memory.completeTopicProjection(initial.jobId, { topics: [{ title: '数据库', description: '资料',
+      sourceEventIds: [old!.id], sections: [{ title: '已有小节', sourceEventIds: [old!.id] }], overview: [],
+    }] });
+    const [added] = await seed(memory); const next = (await memory.claimNextTopicProjection())!;
+    await memory.completeTopicProjection(next.jobId, { topics: [{ topicId: id!, title: '数据库', description: '资料',
+      sourceEventIds: [added!.id], sections: [{ title: '新小节', sourceEventIds: [added!.id] }],
+      overview: [{ kind: 'scope', title: '已有小节', text: '新资料范围。', sourceEventIds: [added!.id] }],
+    }] });
+    expect(memory.getMemoryTopic(id!)!.sections).toEqual([{ title: '已有小节', sourceEventIds: [old!.id] }, { title: '新小节', sourceEventIds: [added!.id] }]);
+  });
+
+  it('preserves unnamed legacy overview verbatim in an explicit update', async () => {
+    const memory = StrataGate.inMemory(options); const [old] = await seed(memory); const initial = (await memory.claimNextTopicProjection())!;
+    const oldParagraph = { kind: 'history' as const, text: '旧资料。', sourceEventIds: [old!.id] };
+    const { topicIds: [id] } = await memory.completeTopicProjection(initial.jobId, { topics: [{ title: '数据库', description: '资料',
+      sourceEventIds: [old!.id], overview: [oldParagraph],
+    }] });
+    const [added] = await seed(memory); const next = (await memory.claimNextTopicProjection())!;
+    await memory.completeTopicProjection(next.jobId, { topics: [{ topicId: id!, title: '数据库', description: '资料',
+      sourceEventIds: [old!.id, added!.id], sections: [{ title: '新小节', sourceEventIds: [added!.id] }], overview: [oldParagraph],
+    }] });
+    expect(memory.getMemoryTopic(id!)!.overview).toEqual([oldParagraph]);
+    expect(memory.getMemoryTopic(id!)!.sections).toEqual([{ title: '发展脉络', sourceEventIds: [old!.id] }, { title: '新小节', sourceEventIds: [added!.id] }]);
+  });
+
   it('keeps exhausted collateral rebuild retries historical even after Bootstrap originally completed', async () => {
     let clock = Date.parse('2026-10-06T00:00:00Z');
     const memory = StrataGate.inMemory(options); const events = await seed(memory, 2);

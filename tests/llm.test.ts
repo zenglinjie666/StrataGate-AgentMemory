@@ -1062,7 +1062,7 @@ describe('memory topic model projection', () => {
       topicId: 'topic_database', title: 'StrataGate 数据库', description: '包含选型历史、迁移计划和未解决的分歧。',
       sourceEventIds: ['evt_topic_old', 'evt_topic_new'], overview: [
         { ...context().existingTopics[0]!.overview[0]!, sourceEventIds: ['evt_topic_old'] },
-        { kind: 'open-question', text: '计划下周迁移，尚未执行；与旧选型存在待确认的分歧。', sourceEventIds: ['evt_topic_new'] },
+        { kind: 'open-question', title: '数据库与迁移', text: '计划下周迁移，尚未执行；与旧选型存在待确认的分歧。', sourceEventIds: ['evt_topic_new'] },
       ],
       sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
     }] }
@@ -1084,7 +1084,7 @@ describe('memory topic model projection', () => {
     const output = proposal()
     output.topics[0]!.sourceEventIds.push('evt_topic_prior')
     output.topics[0]!.sections![0]!.sourceEventIds.push('evt_topic_prior')
-    output.topics[0]!.overview.push({ kind: 'history', text: '此前的选型记录已被取代。', sourceEventIds: ['evt_topic_prior'] })
+    output.topics[0]!.overview.push({ kind: 'history', title: '数据库与迁移', text: '此前的选型记录已被取代。', sourceEventIds: ['evt_topic_prior'] })
     const { bridge, calls } = modelBridge([{ tool: output }])
 
     expect(await bridge.runDetached('topic-worker', () => bridge.topicProjector(input))).toEqual(output)
@@ -1120,7 +1120,7 @@ describe('memory topic model projection', () => {
   it('accepts a new topic for an Event without Graph nodes, including adapter JSON fallback', async () => {
     const output = { topics: [{ title: '数据库迁移', description: '包含迁移计划及待确认事项。', sourceEventIds: ['evt_topic_new'],
       sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
-      overview: [{ kind: 'open-question', text: '迁移尚在计划中，未执行。', sourceEventIds: ['evt_topic_new'] }],
+      overview: [{ kind: 'open-question', title: '数据库与迁移', text: '迁移尚在计划中，未执行。', sourceEventIds: ['evt_topic_new'] }],
     }] }
     const { bridge, session } = modelBridge([{ text: JSON.stringify(output) }])
     expect(await bridge.run(session, () => bridge.topicProjector({ ...context(), existingTopics: [] }))).toEqual(output)
@@ -1136,6 +1136,26 @@ describe('memory topic model projection', () => {
     expect((calls.mock.calls[0]![0] as any).system).toContain('无需输出复述')
     expect((calls.mock.calls[0]![0] as any).tools[0].parameters.properties.topics.items.required).toContain('sections')
   })
+
+  it.each(['unnamed', 'unknown-title'] as const)('rejects %s new overview outside declared and inherited sections', async (invalid) => {
+    const input = { ...context(), existingTopics: [] }; const output = proposal(); const topic = output.topics[0]!;
+    delete topic.topicId; topic.sourceEventIds = ['evt_topic_new'];
+    topic.overview = [{ kind: 'open-question', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'],
+      ...(invalid === 'unknown-title' ? { title: '不存在的小节' } : {}) }];
+    const { bridge, session } = modelBridge([{ tool: output }, { tool: output }]);
+    await expect(bridge.run(session, () => bridge.topicProjector(input))).rejects.toThrow(/overview.*section/i);
+  });
+
+  it.each(['default-kind', 'normalized', 'inherited'] as const)('accepts %s overview display title on a known section', async (mode) => {
+    const input = context(); input.existingTopics[0]!.sectionTitles = ['已有小节'];
+    const output = proposal(); const topic = output.topics[0]!;
+    topic.sourceEventIds = ['evt_topic_new'];
+    topic.overview = [{ kind: 'open-question', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'],
+      ...(mode === 'inherited' ? { title: '已有小节' } : mode === 'normalized' ? { title: 'ＡＩ　研究' } : {}) }];
+    topic.sections![0]!.title = mode === 'default-kind' ? '尚未解决的问题' : mode === 'normalized' ? 'ai  研究' : '新小节';
+    const { bridge, session } = modelBridge([{ tool: output }]);
+    expect(await bridge.run(session, () => bridge.topicProjector(input))).toEqual(output);
+  });
 
   it.each(['absent', 'unassigned', 'foreign', 'duplicate'] as const)('rejects %s section membership independently of overview coverage', async (invalid) => {
     const output = proposal(); const topic = output.topics[0]!;
@@ -1188,7 +1208,7 @@ describe('memory topic model projection', () => {
   it('allows a flagged truncated Event to produce only a scope entry', async () => {
     const input = { ...context(), truncatedEventIds: ['evt_topic_new'] }
     const output = proposal()
-    output.topics[0]!.overview[1] = { kind: 'scope', text: '包含数据库迁移资料，细节需展开原文核对。', sourceEventIds: ['evt_topic_new'] }
+    output.topics[0]!.overview[1] = { kind: 'scope', title: '数据库与迁移', text: '包含数据库迁移资料，细节需展开原文核对。', sourceEventIds: ['evt_topic_new'] }
     const { bridge, session, calls } = modelBridge([{ tool: output }])
     expect(await bridge.run(session, () => bridge.topicProjector(input))).toEqual(output)
     const request = calls.mock.calls[0]![0] as any
@@ -1283,7 +1303,7 @@ describe('memory topic model projection', () => {
     const input = largeContext()
     const output = { topics: [{ title: '迁移', description: '包含迁移计划。', sourceEventIds: ['evt_topic_new'],
       sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
-      overview: [{ kind: 'open-question', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'] }],
+      overview: [{ kind: 'open-question', title: '数据库与迁移', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'] }],
     }] }
     const { bridge, session, calls } = modelBridge([{ tool: output }])
     expect(await bridge.run(session, () => bridge.topicProjector(input))).toEqual(output)
@@ -1299,7 +1319,7 @@ describe('memory topic model projection', () => {
     const input = largeContext()
     const output = { topics: [{ topicId: 'topic_11', title: '迁移', description: '包含迁移计划。', sourceEventIds: ['evt_topic_new'],
       sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
-      overview: [{ kind: 'open-question', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'] }],
+      overview: [{ kind: 'open-question', title: '数据库与迁移', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'] }],
     }] }
     const { bridge, session, calls } = modelBridge([{ tool: output }, { tool: output }])
     await expect(bridge.run(session, () => bridge.topicProjector(input))).rejects.toThrow('unknown or repeated topicId')
