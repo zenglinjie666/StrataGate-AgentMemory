@@ -92,6 +92,54 @@ async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GE
 }
 
 describe('read-only Topic Directory admin data', () => {
+  it('moves migrated uncategorized Events into actual section paging without manufacturing overview prose', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = ['research', 'education', 'math-news'].map(event);
+    const state = freeze(snapshot.events), chapter = topic('personal', snapshot.events);
+    chapter.overview = [{ kind: 'history', title: '研究方向', text: 'AI4Math', sourceEventIds: ['research'] }];
+    state.topics = [chapter]; state.projectedVersions = versions(snapshot.events);
+    delete state.sectionMembershipVersion;
+    const directory = new MemoryTopicDirectory(); directory.restore(state);
+    directory.initializeBootstrap(snapshot.events, now);
+    const context = directory.claim(snapshot.events, now, 'bootstrap')!;
+    expect(context.events.map(({ id }) => id)).toEqual(['education', 'math-news']);
+    directory.complete(context.jobId, { topics: [{ topicId: 'personal', title: chapter.title, description: chapter.description,
+      sourceEventIds: ['education', 'math-news'], overview: [], sections: [
+        { title: '教育背景', sourceEventIds: ['education'] }, { title: '研究方向', sourceEventIds: ['math-news'] },
+      ],
+    }] }, snapshot.events, now);
+    snapshot.memoryTopicState = directory.snapshot();
+    const runtime = fakeRuntime(snapshot), before = JSON.stringify(snapshot);
+    const response = await request(runtime);
+    expect(response.body.topics[0].coverage).toMatchObject({ totalEvents: 3, summarizedEvents: 1, omittedEvents: 2, unassignedEvents: 0 });
+    expect(response.body.topics[0].sections.map((section: any) => [section.title, section.sourceEventCount, section.paragraphs.length]))
+      .toEqual([['研究方向', 2, 1], ['教育背景', 1, 0]]);
+    expect((await request(runtime, `topic-events&topicId=personal&sectionKey=${memoryTopicSectionKey('教育背景')}`)).body.items.map((item: any) => item.id))
+      .toEqual(['education']);
+    expect((await request(runtime, 'topic-events&topicId=personal&sectionKey=uncovered')).body.items).toEqual([]);
+    expect(JSON.stringify(snapshot)).toBe(before);
+  });
+
+  it('shows exhausted membership-backfill failures even when prose projection was already completed', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = ['known', 'unassigned'].map(event);
+    const state = freeze(snapshot.events), chapter = topic('personal', snapshot.events);
+    chapter.overview = [{ kind: 'history', title: '研究方向', text: '资料', sourceEventIds: ['known'] }];
+    state.topics = [chapter]; state.projectedVersions = versions(snapshot.events);
+    delete state.sectionMembershipVersion;
+    const directory = new MemoryTopicDirectory(); directory.restore(state);
+    directory.initializeBootstrap(snapshot.events, now);
+    let clock = Date.parse(now), lastJob = '';
+    for (let i = 0; i < 3; i++) {
+      const context = directory.claim(snapshot.events, new Date(clock).toISOString(), 'bootstrap')!;
+      lastJob = context.jobId; directory.fail(lastJob, new Error('invalid sections'), new Date(clock).toISOString());
+      clock += 120_000;
+    }
+    snapshot.memoryTopicState = directory.snapshot();
+    const response = await request(fakeRuntime(snapshot));
+    expect(response.body.bootstrap).toMatchObject({ total: 2, completed: 1, failedEvents: 1,
+      failures: [{ jobId: lastJob, eventCount: 1, attempts: 3 }] });
+    expect(JSON.stringify(response.body)).not.toContain('sourceEventIds');
+  });
+
   it('does not recreate an orphan overview section in the directory or paging after reclassification', async () => {
     const snapshot = emptySnapshot(); snapshot.events = [event('moved')];
     const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);

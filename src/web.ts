@@ -511,10 +511,12 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
   const frozen = state.bootstrap?.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION ? state.bootstrap : null
   // Changed, forgotten, archived or disabled-lane sources no longer belong to
   // this frozen history. Failures are never counted as successful completions.
-  const budgetedVersions = { ...(frozen?.sourceVersions ?? {}), ...state.rebuildVersions }
+  const backfillVersions = Object.fromEntries(Object.values(state.sectionBackfill ?? {}).flatMap((pending) => Object.entries(pending)))
+  const budgetedVersions = { ...(frozen?.sourceVersions ?? {}), ...state.rebuildVersions, ...backfillVersions }
   const history = frozen ? Object.entries(budgetedVersions)
     .filter(([id, version]) => versions.get(id) === version) : []
-  const outstanding = new Set(history.filter(([id, version]) => state.projectedVersions[id] !== version)
+  const outstanding = new Set(history.filter(([id, version]) => state.projectedVersions[id] !== version
+    || backfillVersions[id] === version)
     .map(([id]) => id))
   const failures = state.jobs.flatMap((job) => {
     if (job.superseded || job.projectorVersion !== MEMORY_TOPIC_PROJECTOR_VERSION
@@ -522,7 +524,8 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
       || !Object.entries({ ...job.sourceVersions, ...job.dependencyVersions })
         .every(([id, version]) => versions.get(id) === version)) return []
     const ids = job.sourceEventIds.filter((id) => outstanding.has(id)
-      && budgetedVersions[id] === job.sourceVersions[id])
+      && budgetedVersions[id] === job.sourceVersions[id]
+      && (!job.sectionBackfillTopicId || state.sectionBackfill?.[job.sectionBackfillTopicId]?.[id] === job.sourceVersions[id]))
     return ids.length > 0 ? [{
       jobId: job.id, eventIds: ids, attempts: job.attempts,
       // Topic failures store reason codes, never raw model output.
@@ -532,7 +535,7 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
     }] : []
   })
   const bootstrap = frozen ? {
-    status: Object.keys(state.rebuildVersions ?? {}).length > 0
+    status: Object.keys(state.rebuildVersions ?? {}).length > 0 || Object.keys(backfillVersions).length > 0
       ? (outstanding.size === new Set(failures.flatMap(({ eventIds }) => eventIds)).size ? 'completed' : 'running')
       : frozen.status,
     total: history.length,

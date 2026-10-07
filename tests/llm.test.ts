@@ -1328,6 +1328,33 @@ describe('memory topic model projection', () => {
     expect(bridge.takeSuccessfulResponses()).toEqual([])
   })
 
+  it('exposes the fixed backfill chapter to the model and permits an empty overview', async () => {
+    const input = { ...context(), sectionBackfillTopicId: 'topic_database' };
+    const output = proposal(); output.topics[0]!.overview = [];
+    const { bridge, session, calls } = modelBridge([{ tool: output }]);
+    expect(await bridge.run(session, () => bridge.topicProjector(input))).toEqual(output);
+    const request = calls.mock.calls[0]![0] as any;
+    const payload = JSON.parse(request.messages[0].content[0].text);
+    expect(payload.sectionBackfillTopicId).toBe('topic_database');
+    expect(payload.existingTopics[0].id).toBe('topic_database');
+    expect(request.system).toContain('不得换章或新建章');
+  });
+
+  it('rejects backfill output routed to a new chapter', async () => {
+    const output = proposal(); delete output.topics[0]!.topicId;
+    const { bridge, session } = modelBridge([{ tool: output }, { tool: output }]);
+    await expect(bridge.run(session, () => bridge.topicProjector({ ...context(), sectionBackfillTopicId: 'topic_database' })))
+      .rejects.toThrow('section backfill must update only its existing chapter');
+  });
+
+  it('fails before calling a model instead of omitting an oversized mandatory backfill chapter', async () => {
+    const input = { ...context(), sectionBackfillTopicId: 'topic_database' };
+    input.existingTopics[0]!.sectionTitles = ['甲'.repeat(50_000)];
+    const { bridge, session, calls } = modelBridge([{ tool: proposal() }]);
+    await expect(bridge.run(session, () => bridge.topicProjector(input))).rejects.toThrow(/exceeds.*tokens/);
+    expect(calls).not.toHaveBeenCalled();
+  });
+
   it('does not pay for an identical second topic call after output truncation', async () => {
     const { bridge, session, calls } = modelBridge([{ text: '{"topics":[', finish: 'max-tokens' }, { tool: proposal() }])
     await expect(bridge.run(session, () => bridge.topicProjector(context()))).rejects.toThrow('after 1 attempt')

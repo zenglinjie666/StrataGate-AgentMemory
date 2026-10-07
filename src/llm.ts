@@ -305,6 +305,7 @@ Topic 是长期的大章节，按项目、生活领域或长期关系组织，�
 title 是可识别的主题名称；description 用一句话说明这里存有哪些资料，例如“包含部署选型、迁移经过和遗留问题”，不要把历史结论写成当前事实。overview 的 kind 仅允许 scope（背景或覆盖范围）、history（历史进展）、decision（当时的决定）、change（有依据的变化）、open-question（待确认事项）。保留明确时点、过去式、计划、取消、争议和不确定性；没有新的支持不能把旧事实升格为当前结论，不能把计划写成已完成、建议写成已决定、推测写成原因。决定曾经成立不等于现在仍有效。相关事件矛盾时保留矛盾和待确认状态。
 
 sections 独立保存事件的小节归属，与 overview 的来源引用分开。每个归入本章的本批事件必须至少分配到一个 sections 小节，即使总览没有引用它。sections 只写本批事件编号；旧归属由存储层继承。优先逐字复用 existingTopics.sectionTitles 中适合的标题；小节沿用上述长期类别规则。新 overview 的展示标题必须匹配本轮 sections.title 或重分类后仍存在的已有小节标题，不能靠总览单独创建小节；省略 title 时，其 kind 的默认展示标题也必须有对应的最终小节。若重分类移走旧小节的全部事件，存储层丢弃该节的旧总览，即使本轮原样回传也不会保留。overview.title 只决定概括文字显示在哪个小节，不决定事件归属；无需为每条事件写总览，也不要为了覆盖目录而虚增来源引用。
+若输入含 sectionBackfillTopicId，这是升级后的旧事件补归类：只返回该 topicId 的一个章节，保留原章名和描述，为全部本批事件写入适当的小节；不得换章或新建章。已有小节标题可能只展示前 120 个，优先复用适合的已有标题。此任务无需重写总览，overview 可以为空，存储层保留有效旧总览。
 
 outputTokenBudget 是整个响应的输出预算。优先完整分配本批所有事件到章节和小节，再写必要的简短名称、范围说明和新增段。存储层会在最终小节仍存在时自动继承有效旧概要，无需输出复述；通常只需 0-2 段新增概要，预算不足时 overview 可为空，sections 仍必须完整归类本批事件，不截断 JSON 或遗漏事件。
 每批最多 12 个主题；title 最多 120 个字符，description 最多 400 个字符，但尽量用短名称和一句范围说明；每个主题在本次响应最多 8 段概要；这不是累计章节的段数或节数上限，有效旧段由存储层保留。每段最多 600 个字符、12 个来源。不要重复标题、目录说明、已有概要或无关背景。不要生成经验层或另写新的事件。`
@@ -471,6 +472,9 @@ function topicProjectionPayload(context: TopicProjectionContext, outputTokenBudg
   if (new Set(context.existingTopics.map(({ id }) => id)).size !== context.existingTopics.length) {
     throw new Error('Topic projection input contains duplicate candidate topic ids')
   }
+  if (context.sectionBackfillTopicId && !context.existingTopics.some(({ id }) => id === context.sectionBackfillTopicId)) {
+    throw new Error('Topic section backfill input must include its existing chapter')
+  }
   const events = context.events.map((event) => ({
     id: event.id, title: event.title, summary: event.summary, tags: event.tags,
     ...(event.catalogHints === undefined ? {} : { catalogHints: event.catalogHints }),
@@ -480,6 +484,7 @@ function topicProjectionPayload(context: TopicProjectionContext, outputTokenBudg
   for (;;) {
     const payload = {
       jobId: context.jobId,
+      ...(context.sectionBackfillTopicId ? { sectionBackfillTopicId: context.sectionBackfillTopicId } : {}),
       evidenceCompleteness: 'bounded-navigation-cards; retrieve Event and original-source evidence before relying on factual content',
       outputTokenBudget,
       events,
@@ -487,6 +492,7 @@ function topicProjectionPayload(context: TopicProjectionContext, outputTokenBudg
       existingTopics: existingTopics.map((topic) => ({
         id: topic.id, title: topic.title, description: topic.description,
         overview: topic.overview, ...(topic.sectionTitles ? { sectionTitles: topic.sectionTitles } : {}), sourceEventIds: topic.sourceEventIds, totalSourceEvents: topic.totalSourceEvents,
+        ...(topic.sectionTitlesOmitted ? { sectionTitlesOmitted: topic.sectionTitlesOmitted } : {}),
       })),
       candidateTopicsOmitted: context.existingTopics.length - existingTopics.length,
     }
@@ -494,7 +500,7 @@ function topicProjectionPayload(context: TopicProjectionContext, outputTokenBudg
     if (inputTokens <= MAX_TOPIC_INPUT_TOKENS) return { payload, shownContext: { ...context, existingTopics } }
     // Candidates are routing hints, so omit whole lower-priority candidates
     // with an explicit count. Never shorten Event evidence or an overview.
-    if (existingTopics.length > 0) existingTopics.pop()
+    if (existingTopics.length > 0 && existingTopics.at(-1)!.id !== context.sectionBackfillTopicId) existingTopics.pop()
     else throw new Error(`Topic projection input exceeds ${MAX_TOPIC_INPUT_TOKENS} estimated tokens; split the Event batch instead of truncating evidence`)
   }
 }
@@ -522,7 +528,8 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
     }
     return value as string[]
   }
-  const topics = (raw.topics as unknown[]).map((candidate) => {
+  const rawTopics = raw.topics as unknown[];
+  const topics = rawTopics.map((candidate) => {
     const item = object(candidate)
     const title = boundedText(item.title, 'topic.title', 120)
     const label = title.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase()
@@ -530,6 +537,9 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
     usedLabels.add(label)
     if (Object.keys(item).some((key) => !['topicId', 'title', 'description', 'sourceEventIds', 'overview', 'sections'].includes(key))) fail('unexpected topic field')
     const topicId = item.topicId === undefined ? undefined : boundedText(item.topicId, 'topicId', 200)
+    if (context.sectionBackfillTopicId && (rawTopics.length !== 1 || topicId !== context.sectionBackfillTopicId)) {
+      fail('section backfill must update only its existing chapter')
+    }
     if (topicId !== undefined && (!candidates.has(topicId) || usedTopicIds.has(topicId))) fail('unknown or repeated topicId')
     if (topicId !== undefined) usedTopicIds.add(topicId)
     const existing = topicId === undefined ? undefined : candidates.get(topicId)

@@ -160,6 +160,76 @@ const deploymentEvents: SeedEvent[] = [
 ]
 
 describe('memory topic runtime boundaries', () => {
+  it('backfills only uncategorized old Events within the historical allowance across restart', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'stratagate-old-membership-budget-'));
+    const database = join(folder, 'memory.db'), namespace = 'dsh:project:old-membership';
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let runtime: StrataGateRuntime | undefined;
+    const topicProjector = vi.fn(async (context: TopicProjectionContext): Promise<TopicProjectionResult> => ({
+      topics: [{ topicId: context.sectionBackfillTopicId ?? context.existingTopics[0]!.id,
+        title: '个人背景', description: '学历及研究方向', sourceEventIds: context.events.map(({ id }) => id),
+        sections: [{ title: '教育背景', sourceEventIds: context.events.map(({ id }) => id) }], overview: [] }],
+    }));
+    const open = () => new StrataGateRuntime(makeConfig(database), {
+      ...makeModels().models, isReady: () => true, topicProjector,
+    } as unknown as DshModelBridge);
+    try {
+      const inputs = Array.from({ length: 30 }, (_, i) => ({ id: `old-${i}`, title: '西电密码学硕士在读',
+        summary: '历史个人信息', topic: '个人背景' }));
+      await seed(database, namespace, inputs);
+      const storage = new SqliteStorage({ filename: database });
+      const loaded = (await storage.load(namespace))!;
+      const old = loaded.snapshot.memoryTopicState!, chapter = old.topics[0]!;
+      chapter.sections = [{ title: '研究方向', sourceEventIds: ['old-0'] }];
+      chapter.overview = [{ kind: 'history', title: '研究方向', text: '研究兴趣 AI4Math', sourceEventIds: ['old-0'] }];
+      delete old.sectionMembershipVersion; delete old.sectionBackfill;
+      await storage.save(namespace, loaded.snapshot, loaded.revision); await storage.close();
+      const metadata = new DshMetadataStore(database);
+      try { metadata.reserveTopicBootstrapCall(now); metadata.reserveTopicBootstrapCall(now); } finally { metadata.close(); }
+      const previousBudget = topicBudget(database);
+      runtime = open(); let worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).not.toHaveBeenCalled(); expect(topicBudget(database)).toBe(previousBudget);
+      const baselineSnapshot = (await runtime.adminSnapshot(namespace))!;
+      const queued = baselineSnapshot.memoryTopicState!;
+      expect(Object.keys(queued.sectionBackfill![chapter.id]!)).toHaveLength(29);
+      expect(queued.bootstrap).toEqual(old.bootstrap);
+      await runtime.close(); runtime = open(); worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace); expect(topicProjector).not.toHaveBeenCalled();
+      await seed(database, namespace, [{ id: 'new-event', title: '新学历信息', summary: '新增资料', topic: '个人背景' }], false);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(1);
+      expect(topicProjector.mock.calls[0]![0].events.map(({ id }) => id)).toEqual(['new-event']);
+      expect(topicBudget(database)).toBe(previousBudget);
+      now += TOPIC_BOOTSTRAP_WINDOW_MS;
+      for (let i = 0; i < 5; i++) await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(3);
+      const partial = (await runtime.adminSnapshot(namespace))!.memoryTopicState!;
+      expect(Object.keys(partial.sectionBackfill![chapter.id]!)).toHaveLength(5);
+      await runtime.close(); runtime = open(); worker = manualWorker(runtime);
+      await worker.runBackgroundNamespace(namespace); expect(topicProjector).toHaveBeenCalledTimes(3);
+      now += TOPIC_BOOTSTRAP_WINDOW_MS;
+      await worker.runBackgroundNamespace(namespace); expect(topicProjector).toHaveBeenCalledTimes(4);
+      const finished = (await runtime.adminSnapshot(namespace))!;
+      expect(finished.memoryTopicState!.sectionBackfill).toEqual({});
+      expect(topicProjector.mock.calls.slice(1).flatMap(([context]) => context.events.map(({ id }) => id)))
+        .toEqual(inputs.slice(1).map(({ id }) => id));
+      expect(finished.memoryTopicState!.topics[0]).toMatchObject({ id: chapter.id, title: chapter.title,
+        overview: chapter.overview, sourceEventIds: [...chapter.sourceEventIds, 'new-event'] });
+      // The existing Graph worker fills derived node pointers independently;
+      // compare every factual/metadata/weight field without those index pointers.
+      const withoutGraphPointers = (events: StrataGateSnapshot['events']) => events.map(({ temporal, ...event }) => {
+        const { participantNodeIds: _pointers, ...facts } = temporal;
+        return { ...event, temporal: facts };
+      });
+      expect(withoutGraphPointers(finished.events.filter(({ id }) => id !== 'new-event')))
+        .toEqual(withoutGraphPointers(baselineSnapshot.events));
+      const budgetAfter = topicBudget(database);
+      await worker.runBackgroundNamespace(namespace);
+      expect(topicProjector).toHaveBeenCalledTimes(4); expect(topicBudget(database)).toBe(budgetAfter);
+    } finally { clock.mockRestore(); await runtime?.close(); await rm(folder, { recursive: true, force: true }); }
+  }, 45_000);
+
   it('regroups V2 sections within the existing persisted budget and preserves the chapter across restart', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'stratagate-section-budget-'));
     const database = join(folder, 'memory.db'), namespace = 'dsh:project:sections';
