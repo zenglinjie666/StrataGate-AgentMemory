@@ -41,7 +41,7 @@ function currentPluginVersion(): string {
 const STRATAGATE_DSH_VERSION = currentPluginVersion()
 // Invalidate cached paragraph-based views even for prerelease builds that share
 // a package version and unchanged database revision.
-const TOPIC_DIRECTORY_VIEW_VERSION = 4
+const TOPIC_DIRECTORY_VIEW_VERSION = 5
 
 function graphProjectionIsProcessing(job: {
   status: string
@@ -562,7 +562,10 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
       topics: chapters.map((topic) => ({
         id: topic.id, title: topic.title, description: topic.description,
         createdAt: topic.createdAt, updatedAt: topic.updatedAt,
-        coverage: { ...topic.coverage },
+        coverage: { ...topic.coverage, unassignedEvents: (() => {
+          const assigned = new Set(memoryTopicSections(topic).flatMap((section) => section.sourceEventIds))
+          return topic.sourceEventIds.filter((id) => !assigned.has(id)).length
+        })() },
         sections: memoryTopicSectionNavigation(topic),
         overview: topic.overview.map((part) => ({
           kind: part.kind, text: part.text,
@@ -644,7 +647,7 @@ async function topicEvents(runtime: StrataGateRuntime, url: URL): Promise<unknow
     if (!topic) throw new AdminHttpError(404, 'Unknown or unavailable memory topic')
     if (sectionKey === null) ids = topic.sourceEventIds
     else if (sectionKey === 'uncovered') {
-      const covered = new Set(topic.overview.flatMap((part) => part.sourceEventIds))
+      const covered = new Set(memoryTopicSections(topic).flatMap((section) => section.sourceEventIds))
       ids = topic.sourceEventIds.filter((id) => !covered.has(id))
     } else {
       const section = memoryTopicSections(topic).find((candidate) => candidate.key === sectionKey)

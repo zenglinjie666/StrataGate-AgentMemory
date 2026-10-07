@@ -28,6 +28,84 @@ function projection(context: TopicProjectionContext, topicId?: string): TopicPro
 }
 
 describe('rebuildable Event-backed topic directory', () => {
+  it('persists section membership without overview evidence across SQLite reopen and incremental updates', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'topic-membership-'));
+    const database = join(folder, 'memory.sqlite');
+    const open = () => StrataGate.open({ ...options, database, namespace: 'sections' });
+    let memory = await open();
+    try {
+      const events = await seed(memory, 2);
+      const job = (await memory.claimNextTopicProjection())!;
+      const sections = [{ title: '研究方向', sourceEventIds: events.map(({ id }) => id) }];
+      const { topicIds: [topicId] } = await memory.completeTopicProjection(job.jobId, { topics: [{
+        title: '学术背景', description: '学术资料', sourceEventIds: events.map(({ id }) => id), sections,
+        overview: [{ kind: 'scope', title: '研究方向', text: '研究记录', sourceEventIds: [events[0]!.id] }],
+      }] });
+      expect(memory.getMemoryTopic(topicId!)?.coverage).toMatchObject({ summarizedEvents: 1, omittedEvents: 1 });
+      expect(memory.exportSnapshot().memoryTopicState!.topics[0]!.sections).toEqual(sections);
+      await memory.close(); memory = await open();
+      expect(memory.getMemoryTopic(topicId!)?.sections).toEqual(sections);
+      const [added] = await seed(memory);
+      const next = (await memory.claimNextTopicProjection())!;
+      expect(next.existingTopics[0]!.sectionTitles).toContain('研究方向');
+      await memory.completeTopicProjection(next.jobId, { topics: [{ topicId: topicId!, title: '学术背景', description: '学术资料',
+        sourceEventIds: [added!.id], sections: [{ title: '研究方向', sourceEventIds: [added!.id] }], overview: [],
+      }] });
+      expect(new Set(memory.getMemoryTopic(topicId!)!.sections![0]!.sourceEventIds)).toEqual(new Set([...events.map(({ id }) => id), added!.id]));
+      expect(memory.getMemoryTopic(topicId!)!.overview).toHaveLength(1);
+      await memory.forgetEvent(events[0]!.id);
+      const snapshot = memory.exportSnapshot();
+      expect(snapshot.memoryTopicState!.topics.every((topic) => !topic.sections?.length)).toBe(true);
+      expect(memory.listMemoryTopics().flatMap((topic) => topic.sections ?? [])).toEqual([]);
+    } finally { await memory.close(); await rm(folder, { recursive: true, force: true }); }
+  });
+
+  it('migrates only known legacy section memberships without inventing a category for uncited events', async () => {
+    const memory = StrataGate.inMemory(options); const events = await seed(memory, 2);
+    const job = (await memory.claimNextTopicProjection())!;
+    await memory.completeTopicProjection(job.jobId, { topics: [{ title: '旧章', description: '旧资料',
+      sourceEventIds: events.map(({ id }) => id), overview: [{ kind: 'scope', title: '背景', text: '背景资料', sourceEventIds: [events[0]!.id] }],
+    }] });
+    const legacy = memory.exportSnapshot().memoryTopicState!;
+    delete legacy.topics[0]!.sections;
+    const before = structuredClone(legacy);
+    const directory = new MemoryTopicDirectory(); directory.restore(legacy);
+    expect(directory.snapshot().topics[0]!.sections).toEqual([{ title: '背景', sourceEventIds: [events[0]!.id] }]);
+    expect(legacy).toEqual(before);
+    const stored = directory.snapshot(); stored.topics[0]!.overview = [];
+    directory.restore(stored);
+    expect(directory.list(events)[0]!.sections).toEqual([{ title: '背景', sourceEventIds: [events[0]!.id] }]);
+  });
+
+  it('keeps independent memberships when a legacy caller appends a summary citing only one of them', async () => {
+    const memory = StrataGate.inMemory(options); const [original] = await seed(memory);
+    const job = (await memory.claimNextTopicProjection())!;
+    const oldParagraph = { kind: 'scope' as const, title: '研究方向', text: '研究资料', sourceEventIds: [original!.id] };
+    const { topicIds: [id] } = await memory.completeTopicProjection(job.jobId, { topics: [{ title: '学术背景', description: '资料',
+      sourceEventIds: [original!.id], overview: [oldParagraph], sections: [
+        { title: '研究方向', sourceEventIds: [original!.id] }, { title: '教育背景', sourceEventIds: [original!.id] },
+      ],
+    }] });
+    const [added] = await seed(memory); const next = (await memory.claimNextTopicProjection())!;
+    await memory.completeTopicProjection(next.jobId, { topics: [{ topicId: id!, title: '学术背景', description: '资料',
+      sourceEventIds: [original!.id, added!.id], overview: [oldParagraph,
+        { kind: 'scope', title: '研究方向', text: '新增研究资料', sourceEventIds: [added!.id] }],
+    }] });
+    expect(memory.getMemoryTopic(id!)!.sections!.find((section) => section.title === '教育背景')!.sourceEventIds).toEqual([original!.id]);
+  });
+
+  it.each(['missing', 'foreign', 'duplicate'] as const)('rejects %s explicit section assignments atomically', async (invalid) => {
+    const memory = StrataGate.inMemory(options); const events = await seed(memory, 2);
+    const job = (await memory.claimNextTopicProjection())!;
+    const result = projection(job); result.topics[0]!.overview = [];
+    result.topics[0]!.sections = [{ title: '背景', sourceEventIds: [events[0]!.id] }];
+    if (invalid === 'foreign') result.topics[0]!.sections![0]!.sourceEventIds.push('unknown');
+    if (invalid === 'duplicate') result.topics[0]!.sections!.push({ title: ' 背景 ', sourceEventIds: [events[1]!.id] });
+    const before = memory.exportSnapshot();
+    await expect(memory.completeTopicProjection(job.jobId, result)).rejects.toThrow(/section/i);
+    expect(memory.exportSnapshot()).toEqual(before);
+  });
+
   it('keeps exhausted collateral rebuild retries historical even after Bootstrap originally completed', async () => {
     let clock = Date.parse('2026-10-06T00:00:00Z');
     const memory = StrataGate.inMemory(options); const events = await seed(memory, 2);

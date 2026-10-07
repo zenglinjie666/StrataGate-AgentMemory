@@ -73,10 +73,10 @@ function clientRenderer(runEffects = false, fetchOverride?: any) {
       const topic = backendDirectory.topics.find((topic) => topic.id === topicId)!
       if (!sectionKey) ids = topic.sourceEventIds
       else if (sectionKey === 'uncovered') {
-        const summarized = new Set(topic.overview.flatMap((part) => part.sourceEventIds))
-        ids = topic.sourceEventIds.filter((id) => !summarized.has(id))
+        const assigned = new Set(memoryTopicSections({ ...topic, sections: topic.memberships } as any).flatMap((section) => section.sourceEventIds))
+        ids = topic.sourceEventIds.filter((id) => !assigned.has(id))
       } else {
-        ids = memoryTopicSections(topic as any).find((section) => section.key === sectionKey)?.sourceEventIds || []
+        ids = memoryTopicSections({ ...topic, sections: topic.memberships } as any).find((section) => section.key === sectionKey)?.sourceEventIds || []
       }
     }
     const offset = Number(params.get('offset'))
@@ -103,10 +103,12 @@ function clientRenderer(runEffects = false, fetchOverride?: any) {
       const { sourceEventIds, overview, ...navigation } = topic
       const ids = sourceEventIds ? [...new Set<string>(sourceEventIds)] : null
       const summarized = new Set<string>(overview.flatMap((part: any) => part.sourceEventIds || []))
+      const sections = topic.sections || memoryTopicSectionNavigation({ overview, sourceEventIds: sourceEventIds || [], sections: topic.memberships })
+      const assigned = new Set(ids ? memoryTopicSections({ overview, sourceEventIds: sourceEventIds || [], sections: topic.memberships }).flatMap((section) => section.sourceEventIds) : [])
       return { ...navigation,
-        coverage: ids ? { totalEvents: ids.length, summarizedEvents: ids.filter((id) => summarized.has(id)).length, omittedEvents: ids.filter((id) => !summarized.has(id)).length } : topic.coverage,
+        coverage: ids ? { totalEvents: ids.length, summarizedEvents: ids.filter((id) => summarized.has(id)).length, omittedEvents: ids.filter((id) => !summarized.has(id)).length, unassignedEvents: ids.filter((id) => !assigned.has(id)).length } : topic.coverage,
         overview: overview.map(({ sourceEventIds: references, ...part }: any) => ({ ...part, sourceEventCount: references ? new Set(references).size : part.sourceEventCount })),
-        sections: topic.sections || memoryTopicSectionNavigation({ overview, sourceEventIds: sourceEventIds || [] }),
+        sections: topic.sections || sections,
       }
     }), bootstrap: directory.bootstrap ? { ...directory.bootstrap, failures: directory.bootstrap.failures.map(({ eventIds, ...failure }: any) => ({ ...failure, eventCount: eventIds ? new Set(eventIds).size : failure.eventCount })) } : null }
     directoryViews.set(directory, { fingerprint, view })
@@ -156,7 +158,7 @@ function eventFixture() {
 }
 function fixture() {
   const events = eventFixture()
-  const topic = (id: string, title: string, parts: any[]): { id: string; title: string; description: string; overview: any[]; sourceEventIds: string[]; coverage: any } => ({ id, title, description: title + '的历史与进展', overview: parts, sourceEventIds: parts.flatMap((part) => part.sourceEventIds), coverage: { totalEvents: 20, summarizedEvents: 20, omittedEvents: 0 } })
+  const topic = (id: string, title: string, parts: any[]): { id: string; title: string; description: string; overview: any[]; sourceEventIds: string[]; coverage: any; memberships?: any[] } => ({ id, title, description: title + '的历史与进展', overview: parts, sourceEventIds: parts.flatMap((part) => part.sourceEventIds), coverage: { totalEvents: 20, summarizedEvents: 20, omittedEvents: 0 } })
   return {
     revision: 'revision-1',
     pending: { total: 1 },
@@ -178,6 +180,21 @@ function pageReply(url: string, items: any[], total: number, nextOffset: number 
 }
 
 describe('Topic Directory client interactions', () => {
+  it('shows independently assigned Events without a summary or an other-events bucket', async () => {
+    const client = clientRenderer(true); const directory = fixture();
+    directory.topics = [directory.topics[0]!]; const chapter = directory.topics[0]!;
+    chapter.overview = []; chapter.sourceEventIds = ['event-1', 'event-2'];
+    chapter.memberships = [{ title: '研究方向', sourceEventIds: ['event-1', 'event-2'] }];
+    const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() };
+    let tree = client.render(client.TopicDirectory, props);
+    expect(find(tree, (node) => node.props.className === 'sg-topic-other-events')).toHaveLength(0);
+    buttons(tree, '1.1研究方向›')[0]!.props.onClick();
+    client.render(client.TopicDirectory, props); await client.flush(); tree = client.render(client.TopicDirectory, props);
+    expect(buttons(tree).filter((node) => node.props['data-topic-event-id']).map(({ text }) => text))
+      .toEqual(['1.1.1历史事件 1↗', '1.1.2历史事件 2↗']);
+    expect(buttons(tree, '1.1.0总览›')).toHaveLength(0);
+  });
+
   it('groups same-named paragraphs of different kinds into stable named sections', () => {
     const client = clientRenderer()
     const sections = client.topicSections({ sections: memoryTopicSectionNavigation({ sourceEventIds: ['E1', 'E2'], overview: [
@@ -323,7 +340,7 @@ describe('Topic Directory client interactions', () => {
     let tree = client.render(client.TopicDirectory, props)
     expect(client.fetch).toHaveBeenCalledTimes(0)
     const details = find(tree, (node) => node.props.className === 'sg-topic-other-events')[0]!
-    expect(details.text).toContain('其他关联事件 · 9992')
+    expect(details.text).toContain('待归类事件 · 9992')
     details.props.onToggle({ currentTarget: { open: true } })
     client.render(client.TopicDirectory, props)
     await client.flush()

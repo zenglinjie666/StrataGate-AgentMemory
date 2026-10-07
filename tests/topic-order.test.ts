@@ -1,6 +1,6 @@
 import { estimateTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
 import { describe, expect, it } from 'vitest'
-import { MEMORY_DIRECTORY_TOKEN_BUDGET, renderMemoryDirectory, sortMemoryTopics, topicNavigation, topicPage } from '../src/topics.js'
+import { boundedTopic, MEMORY_DIRECTORY_TOKEN_BUDGET, TOPIC_OVERVIEW_TOKEN_BUDGET, renderMemoryDirectory, sortMemoryTopics, topicNavigation, topicPage } from '../src/topics.js'
 
 function topic(id: string, createdAt: string, sourceEventIds = [id], isFallback = false): MemoryTopic {
   return { id, title: `主题 ${id}`, description: '', sourceEventIds, overview: [], createdAt,
@@ -16,6 +16,17 @@ function source(id: string, eventType: string): EventCard {
 }
 
 describe('shared memory directory order', () => {
+  it('keeps the full independent membership index outside the bounded model expansion', () => {
+    const chapter = topic('large', '2026-10-01T00:00:00.000Z', Array.from({ length: 10_000 }, (_, index) => `member-${index}`));
+    chapter.sections = [{ title: '研究方向', sourceEventIds: [...chapter.sourceEventIds] }];
+    const before = JSON.stringify(chapter); const expanded = boundedTopic(chapter);
+    expect(expanded).not.toHaveProperty('sections');
+    expect(expanded.sourceEventIds).toHaveLength(12);
+    expect(expanded.omittedSourceEvents).toBe(9_988);
+    expect(estimateTokens(JSON.stringify(expanded))).toBeLessThanOrEqual(TOPIC_OVERVIEW_TOKEN_BUDGET);
+    expect(JSON.stringify(chapter)).toBe(before);
+  });
+
   it('keeps same-batch chapters in immutable ID order when their titles change', () => {
     const first = topic('topic_a', '2026-10-01T00:00:00.000Z')
     const second = topic('topic_b', first.createdAt)

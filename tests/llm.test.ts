@@ -971,7 +971,7 @@ describe('memory topic model projection', () => {
     input.events[0]!.catalogHints = ['摄影', '生活经历']
     input.events[0]!.extractorVersion = 2
     const { bridge, session, calls } = modelBridge([{ tool: { topics: [{ title: '生活', description: '活动记录',
-      sourceEventIds: ['evt_hint', 'evt_legacy'], overview: [] }] } }])
+      sourceEventIds: ['evt_hint', 'evt_legacy'], sections: [{ title: '生活经历', sourceEventIds: ['evt_hint', 'evt_legacy'] }], overview: [] }] } }])
     await bridge.run(session, () => bridge.topicProjector(input))
     const request = calls.mock.calls[0]![0] as any
     const payload = JSON.parse(request.messages[0].content[0].text)
@@ -986,6 +986,7 @@ describe('memory topic model projection', () => {
     input.events = [event('root-cause', '0.2.4 提取根因仍待确认。'), event('fix', '0.2.7 修复方案只是计划。'),
       event('installation', '0.2.8 安装已验证。')];
     const output = { topics: [{ title: 'StrataGate', description: '项目缺陷与发布记录',
+      sections: [{ title: '缺陷排查与修复', sourceEventIds: ['root-cause', 'fix'] }, { title: '版本发布与安装', sourceEventIds: ['installation'] }],
       sourceEventIds: input.events.map(({ id }) => id), overview: [
         { kind: 'open-question', title: '缺陷排查与修复', text: '根因待确认；修复方案尚未执行。', sourceEventIds: ['root-cause', 'fix'] },
         { kind: 'history', title: '版本发布与安装', text: '0.2.8 安装已验证。', sourceEventIds: ['installation'] },
@@ -1021,6 +1022,7 @@ describe('memory topic model projection', () => {
 
   it('uses broad chapter routing instructions and preserves concrete section subjects', async () => {
     const output = { topics: [{ title: 'StrataGate', description: '项目的界面与兼容性记录',
+      sections: [{ title: '界面与交互', sourceEventIds: ['evt_topic_new'] }],
       sourceEventIds: ['evt_topic_new'],
       overview: [{ kind: 'history', title: '界面与交互', text: '历史界面变更，尚未确认发布', sourceEventIds: ['evt_topic_new'] }],
     }] }
@@ -1062,6 +1064,7 @@ describe('memory topic model projection', () => {
         { ...context().existingTopics[0]!.overview[0]!, sourceEventIds: ['evt_topic_old'] },
         { kind: 'open-question', text: '计划下周迁移，尚未执行；与旧选型存在待确认的分歧。', sourceEventIds: ['evt_topic_new'] },
       ],
+      sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
     }] }
   }
 
@@ -1080,6 +1083,7 @@ describe('memory topic model projection', () => {
     input.events.push({ ...event('evt_topic_prior', '此前的选型记录已被取代。'), status: 'superseded', supersededBy: 'evt_topic_new' })
     const output = proposal()
     output.topics[0]!.sourceEventIds.push('evt_topic_prior')
+    output.topics[0]!.sections![0]!.sourceEventIds.push('evt_topic_prior')
     output.topics[0]!.overview.push({ kind: 'history', text: '此前的选型记录已被取代。', sourceEventIds: ['evt_topic_prior'] })
     const { bridge, calls } = modelBridge([{ tool: output }])
 
@@ -1115,6 +1119,7 @@ describe('memory topic model projection', () => {
 
   it('accepts a new topic for an Event without Graph nodes, including adapter JSON fallback', async () => {
     const output = { topics: [{ title: '数据库迁移', description: '包含迁移计划及待确认事项。', sourceEventIds: ['evt_topic_new'],
+      sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
       overview: [{ kind: 'open-question', text: '迁移尚在计划中，未执行。', sourceEventIds: ['evt_topic_new'] }],
     }] }
     const { bridge, session } = modelBridge([{ text: JSON.stringify(output) }])
@@ -1129,6 +1134,17 @@ describe('memory topic model projection', () => {
     expect(await bridge.run(session, () => bridge.topicProjector(context()))).toEqual(output)
     expect((calls.mock.calls[0]![0] as any).system).toContain('预算不足时 overview 可为空')
     expect((calls.mock.calls[0]![0] as any).system).toContain('无需输出复述')
+    expect((calls.mock.calls[0]![0] as any).tools[0].parameters.properties.topics.items.required).toContain('sections')
+  })
+
+  it.each(['absent', 'unassigned', 'foreign', 'duplicate'] as const)('rejects %s section membership independently of overview coverage', async (invalid) => {
+    const output = proposal(); const topic = output.topics[0]!;
+    if (invalid === 'absent') delete topic.sections;
+    if (invalid === 'unassigned') topic.sections = [];
+    if (invalid === 'foreign') topic.sections![0]!.sourceEventIds = ['evt_topic_old'];
+    if (invalid === 'duplicate') topic.sections!.push(structuredClone(topic.sections![0]!));
+    const { bridge, session } = modelBridge([{ tool: output }, { tool: output }]);
+    await expect(bridge.run(session, () => bridge.topicProjector(context()))).rejects.toThrow(invalid === 'absent' ? /schema mismatch/ : /section/);
   })
 
   it('retries semantic validation without retaining raw topic responses', async () => {
@@ -1249,6 +1265,7 @@ describe('memory topic model projection', () => {
     input.events = Array.from({ length: 12 }, (_, index) => event(index === 0 ? 'evt_topic_new' : `evt_${index}`))
     const output = proposal()
     output.topics[0]!.sourceEventIds = ['evt_topic_old', ...input.events.map(({ id }) => id)]
+    output.topics[0]!.sections![0]!.sourceEventIds = input.events.map(({ id }) => id)
     output.topics[0]!.overview[1]!.sourceEventIds = [...output.topics[0]!.sourceEventIds]
     const { bridge, session } = modelBridge([{ tool: output }, { tool: output }])
     await expect(bridge.run(session, () => bridge.topicProjector(input))).rejects.toThrow('at most 12')
@@ -1265,6 +1282,7 @@ describe('memory topic model projection', () => {
   it('omits whole optional candidates with an explicit count to bound input, preserving Event evidence', async () => {
     const input = largeContext()
     const output = { topics: [{ title: '迁移', description: '包含迁移计划。', sourceEventIds: ['evt_topic_new'],
+      sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
       overview: [{ kind: 'open-question', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'] }],
     }] }
     const { bridge, session, calls } = modelBridge([{ tool: output }])
@@ -1280,6 +1298,7 @@ describe('memory topic model projection', () => {
   it('rejects a candidate omitted from the actual model input even when it existed in the worker context', async () => {
     const input = largeContext()
     const output = { topics: [{ topicId: 'topic_11', title: '迁移', description: '包含迁移计划。', sourceEventIds: ['evt_topic_new'],
+      sections: [{ title: '数据库与迁移', sourceEventIds: ['evt_topic_new'] }],
       overview: [{ kind: 'open-question', text: '迁移待确认。', sourceEventIds: ['evt_topic_new'] }],
     }] }
     const { bridge, session, calls } = modelBridge([{ tool: output }, { tool: output }])

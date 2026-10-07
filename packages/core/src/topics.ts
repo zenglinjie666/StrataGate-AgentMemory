@@ -17,15 +17,23 @@ export interface MemoryTopicOverview {
   sourceEventIds: string[];
 }
 
+export interface MemoryTopicSection {
+  title: string;
+  /** Directory membership, independent of overview evidence. */
+  sourceEventIds: string[];
+}
+
 export interface MemoryTopic {
   id: string;
   title: string;
   description: string;
   sourceEventIds: string[];
   overview: MemoryTopicOverview[];
+  /** Absent only in legacy snapshots/proposals; migrate from overview sources. */
+  sections?: MemoryTopicSection[];
   createdAt: string;
   updatedAt: string;
-  coverage: { totalEvents: number; summarizedEvents: number; omittedEvents: number };
+  coverage: { totalEvents: number; summarizedEvents: number; omittedEvents: number; unassignedEvents?: number };
   isFallback?: boolean;
 }
 
@@ -55,6 +63,7 @@ export interface TopicProjectionProposal {
   description: string;
   sourceEventIds: string[];
   overview: MemoryTopicOverview[];
+  sections?: MemoryTopicSection[];
 }
 
 export interface TopicProjectionResult { topics: TopicProjectionProposal[] }
@@ -145,8 +154,25 @@ export function memoryTopicSectionTitle(part: MemoryTopicOverview): string {
   return part.title?.trim() || SECTION_TITLES[part.kind] || '主题概览';
 }
 const normalizedLabel = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
-function sectionTitles(topic: Pick<MemoryTopic, 'overview'>): string[] {
+
+/** Legacy evidence provides known memberships; explicit memberships never
+ * depend on whether a summary still cites the Event. */
+export function memoryTopicMembershipSections(topic: Pick<MemoryTopic, 'overview' | 'sections'>): MemoryTopicSection[] {
+  if (topic.sections !== undefined) return structuredClone(topic.sections);
+  const sections = new Map<string, MemoryTopicSection>();
+  for (const part of topic.overview) {
+    const title = memoryTopicSectionTitle(part);
+    const key = normalizedLabel(title);
+    const section = sections.get(key) ?? { title, sourceEventIds: [] };
+    section.sourceEventIds = unique([...section.sourceEventIds, ...part.sourceEventIds]);
+    sections.set(key, section);
+  }
+  return [...sections.values()];
+}
+
+function sectionTitles(topic: Pick<MemoryTopic, 'overview' | 'sections'>): string[] {
   const titles = new Map<string, string>();
+  for (const section of memoryTopicMembershipSections(topic)) titles.set(normalizedLabel(section.title), section.title);
   for (const part of topic.overview) {
     const title = memoryTopicSectionTitle(part);
     if (!titles.has(normalizedLabel(title))) titles.set(normalizedLabel(title), title);
@@ -178,6 +204,7 @@ function topicView(topic: StoredMemoryTopic, events: ReadonlyMap<string, EventCa
     description: valid ? topic.description : '概览等待重新整理，请查看关联事件。',
     sourceEventIds: ids,
     overview,
+    sections: valid ? memoryTopicMembershipSections(topic) : [],
     createdAt: topic.createdAt,
     updatedAt: topic.updatedAt,
     coverage: { totalEvents: ids.length, summarizedEvents: summarized.size, omittedEvents: ids.length - summarized.size },
@@ -203,6 +230,9 @@ export class MemoryTopicDirectory {
 
   restore(state?: MemoryTopicState): void {
     this.state = state ? structuredClone(state) : { topics: [], jobs: [], projectedVersions: {} };
+    for (const topic of this.state.topics) if (topic.sections === undefined) {
+      topic.sections = memoryTopicMembershipSections(topic);
+    }
     // Older prerelease snapshots already cleared their projected ledger on
     // invalidation. Conservatively budget that backlog rather than paying it
     // again as unlimited incremental work after an upgrade/restart.
@@ -270,7 +300,7 @@ export class MemoryTopicDirectory {
         && topic.sourceEventIds.length > 0
         && topic.sourceEventIds.every((id) => sources.has(id) && topic.sourceVersions[id] === versions.get(id))
         && Object.entries(topic.dependencyVersions ?? topic.sourceVersions).every(([id, version]) => versions.get(id) === version))
-        .map((topic) => ({ ...topic, overview: [], projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, updatedAt: now })) : [];
+        .map((topic) => ({ ...topic, overview: [], sections: [], projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, updatedAt: now })) : [];
       // Writer-open Bootstrap freezes visible inputs again. No old projected
       // success or retry context can bypass its durable database-wide budget.
       this.state = { topics: chapters, jobs: [], projectedVersions: {} };
@@ -283,6 +313,7 @@ export class MemoryTopicDirectory {
         topic.title = '';
         topic.description = '';
         topic.overview = [];
+        topic.sections = [];
         for (const id of topic.sourceEventIds) if (sources.has(id)) {
           const version = versions.get(id)!;
           // Only genuinely changed/new versions bypass the historical allowance.
@@ -565,14 +596,42 @@ export class MemoryTopicDirectory {
         if (part.sourceEventIds.some((eventId) => !batchIds.has(eventId))
           && !candidates.get(topicId)?.overview.some((old) => digest(old) === digest(part))) throw new Error('Old overview evidence must be preserved verbatim; new sections need batch events.');
       }
+      if (proposal.sections !== undefined && !Array.isArray(proposal.sections)) throw new Error('Invalid topic sections.');
+      const assignments = memoryTopicMembershipSections(proposal);
+      const sectionLabels = new Set<string>();
+      for (const section of assignments) {
+        if (!section || typeof section.title !== 'string' || !section.title.trim() || [...section.title].length > 80
+          || sectionLabels.has(label(section.title))) throw new Error('Invalid or duplicate topic section title.');
+        sectionLabels.add(label(section.title));
+        checkIds(section.sourceEventIds, 'section');
+        if (section.sourceEventIds.some((eventId) => !ids.includes(eventId))) throw new Error('Section references must belong to returned topic membership.');
+        if (section.sourceEventIds.some((eventId) => !batchIds.has(eventId))
+          && !memoryTopicMembershipSections(existing ?? { overview: [] }).some((old) =>
+            label(old.title) === label(section.title) && section.sourceEventIds.filter((eventId) => !batchIds.has(eventId))
+              .every((eventId) => old.sourceEventIds.includes(eventId)))) throw new Error('Old section membership must be preserved; reassignment needs batch events.');
+      }
+      if (proposal.sections !== undefined && ids.some((eventId) => batchIds.has(eventId)
+        && !assignments.some((section) => section.sourceEventIds.includes(eventId)))) throw new Error('Topic sections omitted batch events.');
       const membership = unique([...(existing?.sourceEventIds ?? []).filter((eventId) => sources.has(eventId)), ...ids]);
       const inherited = existing && !existing.invalidated ? existing.overview : [];
       const overview = unique(proposal.overview.map((part) => JSON.stringify(part))).map((part) => JSON.parse(part) as MemoryTopicOverview);
       // Eight limits one model response, not the accumulated chapter. Never
       // silently evict a valid paragraph or its section to admit newer prose.
       for (const part of inherited) if (!overview.some((current) => digest(current) === digest(part))) overview.push(structuredClone(part));
+      // Legacy callers append evidence, not explicit reclassification commands.
+      const assignedIds = new Set(proposal.sections === undefined ? [] : assignments.flatMap((section) => section.sourceEventIds));
+      const sections = existing && !existing.invalidated ? memoryTopicMembershipSections(existing) : [];
+      const memberIds = new Set(membership);
+      for (const section of sections) section.sourceEventIds = section.sourceEventIds.filter((eventId) =>
+        memberIds.has(eventId) && !assignedIds.has(eventId));
+      for (const assignment of assignments) {
+        const section = sections.find((current) => label(current.title) === label(assignment.title));
+        if (section) section.sourceEventIds = unique([...section.sourceEventIds, ...assignment.sourceEventIds]);
+        else sections.push({ title: assignment.title.trim(), sourceEventIds: [...assignment.sourceEventIds] });
+      }
       proposals.push({ id: topicId, title: proposal.title.trim(), description: proposal.description.trim(),
-        sourceEventIds: membership, overview, sourceVersions: Object.fromEntries(membership.map((eventId) => [eventId, versions.get(eventId)!])),
+        sourceEventIds: membership, overview, sections: sections.filter((section) => section.sourceEventIds.length > 0),
+        sourceVersions: Object.fromEntries(membership.map((eventId) => [eventId, versions.get(eventId)!])),
         dependencyVersions: { ...(!existing?.invalidated ? existing?.dependencyVersions ?? {} : {}), ...job.dependencyVersions },
         projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, invalidated: false,
         createdAt: existing?.createdAt ?? now, updatedAt: now });

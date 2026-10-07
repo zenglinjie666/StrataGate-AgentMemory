@@ -26,6 +26,7 @@ import type {
   SuccessfulModelResponseKind,
   MemoryTopicOverview,
   MemoryTopicOverviewKind,
+  MemoryTopicSection,
   TopicProjectionContext,
   TopicProjectionResult,
   TopicProjector,
@@ -275,6 +276,12 @@ const TOPIC_PROJECTOR_PARAMETERS: ParameterSchemaSpec = {
         title: { type: 'string', description: 'A broad lasting chapter label (project, life area, relationship), not a single task, release, UI page, or factual conclusion.', required: true },
         description: { type: 'string', description: 'Describe which records this topic covers; navigation only, not a claim about current truth.', required: true },
         sourceEventIds: { ...STRING_ARRAY, description: 'Exact supplied Event ids assigned to this topic; existing unseen topic members are retained by the store.', required: true },
+        sections: { type: 'array', required: true, items: {
+          type: 'object', additionalProperties: false, properties: {
+            title: { type: 'string', description: 'Reuse a lasting section title from sectionTitles when applicable.', required: true },
+            sourceEventIds: { ...STRING_ARRAY, description: 'Batch Event ids routed to this section, regardless of overview citations.', required: true },
+          },
+        } },
         overview: { type: 'array', items: TOPIC_OVERVIEW, required: true },
       },
     },
@@ -289,7 +296,7 @@ events.catalogHints 仅是可选 routing hint（分类导航提示），可帮�
 这些事件卡是有界的导航材料，标题或摘要可能省略尾部；不要因未看到否定、后续更新或限制条件就推断当前事实、完成状态或没有争议。完整事实仍须展开事件和原文取证。status、supersededBy、temporal.status 及其明确关系提供的历史、计划、取消和冲突标记必须保留；材料不足时只写覆盖范围或待确认，不补写结论。
 truncatedEventIds 明确列出未完整提供的事件：引用其中任何事件的概要段只能是 scope，只说明资料范围，不写历史、决定、变化或待确认的事实；混合引用其他事件也不能放宽此限制。
 
-Topic 是长期的大章节，按项目、生活领域或长期关系组织，而不是每个事件或子任务一章。例如 StrataGate UI、DSH 兼容、Topic Directory、Retrieval 应归入“StrataGate”同一章；求职投递、面试和实习进展归入“求职与职业发展”。existingTopics.sectionTitles 列出该章全部已有小节标题，仅供导航，不是正文或事实证据。已有小节能容纳本批事项时必须逐字复用原 title，不要近义改名；不能因为 overview 只展示前几段就重复创建小节。确实属于已有类别无法容纳的新长期类别才新增小节；已有章也应复用原章名和 topicId。在章内用 overview.title 区分长期类别，例如“缺陷排查与修复”“版本发布与安装”“架构与配置决策”“界面与交互”“DSH 兼容”；kind 表示段落内容性质，不是拆章或拆节依据。不同项目或不相关领域仍分开，不能为减少章数硬合并。每批通常只新增 0-2 个大章节；12 是互不相关领域的安全上限，不是创建目标。
+Topic 是长期的大章节，按项目、生活领域或长期关系组织，而不是每个事件或子任务一章。例如 StrataGate UI、DSH 兼容、Topic Directory、Retrieval 应归入“StrataGate”同一章；求职投递、面试和实习进展归入“求职与职业发展”。existingTopics.sectionTitles 列出该章全部已有小节标题，仅供导航，不是正文或事实证据。已有小节能容纳本批事项时必须逐字复用原 title，不要近义改名；不能因为 overview 只展示前几段就重复创建小节。确实属于已有类别无法容纳的新长期类别才新增小节；已有章也应复用原章名和 topicId。在章内用 sections.title 区分长期类别，例如“缺陷排查与修复”“版本发布与安装”“架构与配置决策”“界面与交互”“DSH 兼容”；overview.title 使用对应小节标题，kind 表示段落内容性质，不是拆章或拆节依据。不同项目或不相关领域仍分开，不能为减少章数硬合并。每批通常只新增 0-2 个大章节；12 是互不相关领域的安全上限，不是创建目标。
 每个本批事件必须至少分配给一个章节；即使尚未进入图谱也要保留入口。同一项目下不同事件、时间和决定可以共用章节，归类不等于把事实合并或认定它们相同。先检查所有 existingTopics 的范围，能容纳本批事项就优先复用 topicId，即使标题没有该子任务关键词；不要为子功能、版本、一次投递或发布另建章节。同名章节只能返回一次。新增章节省略 topicId；旧章节未展示的成员由存储层保留，不要猜测或补齐其内容。每个章节 sourceEventIds 只写实际给出的事件编号；每段来源必须属于该章节的 sourceEventIds。candidateTopicsOmitted 表示受输入预算限制未展示的候选数，不能推断被省略章节的内容。
 
 导航层级是章 → 节 → Event。Event 保持具体、独立；节必须能持续容纳同类事件。单个 bug、版本号、某天进展、一次安装或一个修复方案不能单独成节，也不要照抄 Event 标题作为节标题。例如“0.2.4 提取根因暴露过程”“0.2.6 提取仍 0 产出”“0.2.7 修复方案”“封块异常待排查”都进入“缺陷排查与修复”；“今日版本迭代 0.2.1→0.2.7”“0.2.8 安装与验证”进入“版本发布与安装”。具体版本、时间、根因、处置过程和状态放在节内概要及原 Event 中。“计划修复”“修复中”“已修复”属于同一类别的不同状态，不另起节。同一类别可以有多个有来源的段落，不要为段落另起标题。
@@ -297,7 +304,9 @@ Topic 是长期的大章节，按项目、生活领域或长期关系组织，�
 
 title 是可识别的主题名称；description 用一句话说明这里存有哪些资料，例如“包含部署选型、迁移经过和遗留问题”，不要把历史结论写成当前事实。overview 的 kind 仅允许 scope（背景或覆盖范围）、history（历史进展）、decision（当时的决定）、change（有依据的变化）、open-question（待确认事项）。保留明确时点、过去式、计划、取消、争议和不确定性；没有新的支持不能把旧事实升格为当前结论，不能把计划写成已完成、建议写成已决定、推测写成原因。决定曾经成立不等于现在仍有效。相关事件矛盾时保留矛盾和待确认状态。
 
-outputTokenBudget 是整个响应的输出预算。优先完整分配本批所有事件，再写必要的简短名称、范围说明和新增段。存储层会自动继承有效旧概要，无需输出复述；通常只需 0-2 段新增概要，预算不足时 overview 可为空，只建立目录入口，不截断 JSON 或遗漏事件。
+sections 独立保存事件的小节归属，与 overview 的来源引用分开。每个归入本章的本批事件必须至少分配到一个 sections 小节，即使总览没有引用它。sections 只写本批事件编号；旧归属由存储层继承。优先逐字复用 existingTopics.sectionTitles 中适合的标题；小节沿用上述长期类别规则。overview.title 只决定概括文字显示在哪个小节，不决定事件归属；无需为每条事件写总览，也不要为了覆盖目录而虚增来源引用。
+
+outputTokenBudget 是整个响应的输出预算。优先完整分配本批所有事件到章节和小节，再写必要的简短名称、范围说明和新增段。存储层会自动继承有效旧概要，无需输出复述；通常只需 0-2 段新增概要，预算不足时 overview 可为空，sections 仍必须完整归类本批事件，不截断 JSON 或遗漏事件。
 每批最多 12 个主题；title 最多 120 个字符，description 最多 400 个字符，但尽量用短名称和一句范围说明；每个主题在本次响应最多 8 段概要；这不是累计章节的段数或节数上限，有效旧段由存储层保留。每段最多 600 个字符、12 个来源。不要重复标题、目录说明、已有概要或无关背景。不要生成经验层或另写新的事件。`
 const MAX_TOPIC_INPUT_TOKENS = 20_000
 
@@ -519,7 +528,7 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
     const label = title.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase()
     if (usedLabels.has(label)) fail('duplicate chapter label; combine its batch assignments')
     usedLabels.add(label)
-    if (Object.keys(item).some((key) => !['topicId', 'title', 'description', 'sourceEventIds', 'overview'].includes(key))) fail('unexpected topic field')
+    if (Object.keys(item).some((key) => !['topicId', 'title', 'description', 'sourceEventIds', 'overview', 'sections'].includes(key))) fail('unexpected topic field')
     const topicId = item.topicId === undefined ? undefined : boundedText(item.topicId, 'topicId', 200)
     if (topicId !== undefined && (!candidates.has(topicId) || usedTopicIds.has(topicId))) fail('unknown or repeated topicId')
     if (topicId !== undefined) usedTopicIds.add(topicId)
@@ -528,6 +537,19 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
     const sources = sourceIds(item.sourceEventIds, 'topic.sourceEventIds', allowedIds)
     if (!sources.some((id) => eventIds.has(id))) fail('every returned topic must cover a supplied batch Event')
     for (const id of sources) if (eventIds.has(id)) covered.add(id)
+    if (!Array.isArray(item.sections) || item.sections.length === 0) fail('sections must assign batch Events independently of overview')
+    const sectionLabels = new Set<string>()
+    const sections: MemoryTopicSection[] = (item.sections as unknown[]).map((candidateSection) => {
+      const section = object(candidateSection)
+      if (Object.keys(section).some((key) => !['title', 'sourceEventIds'].includes(key))) fail('unexpected section field')
+      const title = boundedText(section.title, 'section.title', 80)
+      const key = title.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase()
+      if (sectionLabels.has(key)) fail('duplicate section title')
+      sectionLabels.add(key)
+      return { title, sourceEventIds: sourceIds(section.sourceEventIds, 'section.sourceEventIds', new Set(sources.filter((id) => eventIds.has(id)))) }
+    })
+    const assigned = new Set(sections.flatMap((section) => section.sourceEventIds))
+    if (sources.some((id) => eventIds.has(id) && !assigned.has(id))) fail('every topic batch Event must be assigned to a section')
     if (!Array.isArray(item.overview) || item.overview.length > 8) fail('overview must contain 0-8 source-grounded entries')
     const overview: MemoryTopicOverview[] = (item.overview as unknown[]).map((candidateEntry) => {
       const entry = object(candidateEntry)
@@ -549,6 +571,7 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
       title,
       description: boundedText(item.description, 'topic.description', 400),
       sourceEventIds: sources,
+      sections,
       overview,
     }
   })

@@ -92,6 +92,26 @@ async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GE
 }
 
 describe('read-only Topic Directory admin data', () => {
+  it('indexes uncited and summary-free section members while leaving only genuinely unassigned events in uncovered', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = ['cited', 'uncited', 'no-summary', 'unassigned'].map(event);
+    snapshot.memoryTopicState = freeze(snapshot.events);
+    const chapter = topic('independent', snapshot.events);
+    chapter.overview = [{ kind: 'scope', title: '研究方向', text: '研究资料', sourceEventIds: ['cited'] }];
+    chapter.sections = [{ title: '研究方向', sourceEventIds: ['cited', 'uncited'] }, { title: '教育背景', sourceEventIds: ['no-summary'] }];
+    snapshot.memoryTopicState.topics = [chapter]; snapshot.memoryTopicState.projectedVersions = versions(snapshot.events);
+    const before = JSON.stringify(snapshot); const runtime = fakeRuntime(snapshot);
+    const directory = (await request(runtime)).body;
+    expect(directory.topics[0].coverage).toEqual({ totalEvents: 4, summarizedEvents: 1, omittedEvents: 3, unassignedEvents: 1 });
+    expect(directory.topics[0].sections.map((section: any) => [section.title, section.sourceEventCount, section.paragraphs.length]))
+      .toEqual([['研究方向', 2, 1], ['教育背景', 1, 0]]);
+    const research = (await request(runtime, `topic-events&topicId=independent&sectionKey=${memoryTopicSectionKey('研究方向')}`)).body;
+    expect(research.items.map((item: any) => item.id)).toEqual(['cited', 'uncited']);
+    const background = (await request(runtime, `topic-events&topicId=independent&sectionKey=${memoryTopicSectionKey('教育背景')}`)).body;
+    expect(background.items.map((item: any) => item.id)).toEqual(['no-summary']);
+    expect((await request(runtime, 'topic-events&topicId=independent&sectionKey=uncovered')).body.items.map((item: any) => item.id)).toEqual(['unassigned']);
+    expect(JSON.stringify(directory)).not.toContain('sourceEventIds'); expect(JSON.stringify(snapshot)).toBe(before);
+  });
+
   it('keeps .0 paragraph order and .1-N Event numbers when same-section proposals prepend overlapping sources', async () => {
     const snapshot = emptySnapshot();
     snapshot.events = Array.from({ length: 16 }, (_, index) => event(`stable-${index}`));
@@ -270,7 +290,7 @@ describe('read-only Topic Directory admin data', () => {
     const result = await request(runtime, 'dashboard')
     const directory = result.body.data.topicDirectory
     expect(directory.topics).toHaveLength(1)
-    expect(directory.topics[0].coverage).toEqual({ totalEvents: count, summarizedEvents: 12, omittedEvents: count - 12 })
+    expect(directory.topics[0].coverage).toEqual({ totalEvents: count, summarizedEvents: 12, omittedEvents: count - 12, unassignedEvents: count - 12 })
     expect(directory.topics[0].overview[0].sourceEventCount).toBe(12)
     expect(directory.pending.total).toBe(0)
     const serialized = JSON.stringify(directory)
