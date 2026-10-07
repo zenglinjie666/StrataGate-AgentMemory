@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 - Unreleased
+
+- 为 Topic Projection 提供独立的 32,768 token 输出请求上限；根据宿主公布的 context window 保留输入和余量，每次 payload 声明的预算与实际请求一致，包括结构修复和 reasoning fallback。
+- 区分输出截断、JSON/schema、语义校验、超时、provider/worker 和来源失效等失败，保留安全原因码及运行元数据；不保存模型原文、reasoning 或 Event/Topic 正文。
+- 仅在明确 `finish=max-tokens` 时有限拆批，不裁剪事件证据；失败任务仍遵守退避、历史额度和来源版本检查。目录和通用任务入口都可手动开启新的任务周期，重启后可靠保留，旧任务结果不再生效；升级不会自动复活历史终态失败任务。
+
 ## 0.3.3 - Unreleased
 
 - 将小节成员关系与总览证据分开保存；总览可以为空，所有新整理事件仍有真实小节归属。保留非本批事件的多重归属，重分类移空小节时清理其旧总览，Agent 可读取有界小节索引并按需分页。
