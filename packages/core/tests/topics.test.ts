@@ -28,6 +28,38 @@ function projection(context: TopicProjectionContext, topicId?: string): TopicPro
 }
 
 describe('rebuildable Event-backed topic directory', () => {
+  it('persists a single Event move without orphan overview across SQLite reopen', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'topic-reclassification-'));
+    const database = join(folder, 'memory.sqlite'), namespace = 'reclassification';
+    const open = () => StrataGate.open({ ...options, database, namespace });
+    let memory = await open();
+    try {
+      const [event] = await seed(memory); const initial = (await memory.claimNextTopicProjection())!;
+      const { topicIds: [id] } = await memory.completeTopicProjection(initial.jobId, { topics: [{ title: '项目', description: '资料',
+        sourceEventIds: [event!.id], sections: [{ title: '旧小节', sourceEventIds: [event!.id] }],
+        overview: [{ kind: 'history', title: '旧小节', text: '旧总览', sourceEventIds: [event!.id] }],
+      }] });
+      await memory.close();
+      const storage = new SqliteStorage({ filename: database });
+      try {
+        const loaded = (await storage.load(namespace))!;
+        delete loaded.snapshot.memoryTopicState!.projectedVersions[event!.id];
+        await storage.save(namespace, loaded.snapshot, loaded.revision);
+      } finally { storage.close(); }
+      memory = await open(); const next = (await memory.claimNextTopicProjection())!;
+      const eventsBefore = memory.listAllEvents();
+      await memory.completeTopicProjection(next.jobId, { topics: [{ topicId: id!, title: '项目', description: '资料',
+        sourceEventIds: [event!.id], sections: [{ title: '新小节', sourceEventIds: [event!.id] }], overview: [],
+      }] });
+      expect(memory.listAllEvents()).toEqual(eventsBefore);
+      await memory.close(); memory = await open();
+      expect(memory.getMemoryTopic(id!)).toMatchObject({ sourceEventIds: [event!.id], overview: [],
+        sections: [{ title: '新小节', sourceEventIds: [event!.id] }], coverage: { totalEvents: 1, summarizedEvents: 0, omittedEvents: 1 },
+      });
+      expect(memory.exportSnapshot().memoryTopicState!.topics[0]!.overview).toEqual([]);
+    } finally { await memory.close(); await rm(folder, { recursive: true, force: true }); }
+  });
+
   it('persists section membership without overview evidence across SQLite reopen and incremental updates', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'topic-membership-'));
     const database = join(folder, 'memory.sqlite');
@@ -118,6 +150,90 @@ describe('rebuildable Event-backed topic directory', () => {
     const sections = directory.list(allEvents).find((topic) => topic.id === id)!.sections!;
     expect(sections.find((section) => section.title === '教育背景')!.sourceEventIds).toEqual([other!.id]);
     expect(new Set(sections.find((section) => section.title === '研究方向')!.sourceEventIds)).toEqual(new Set([...originalIds, added!.id]));
+  });
+
+  it.each(['automatic', 'copied', 'default-kind', 'normalized', 'new-summary'] as const)(
+    'drops orphaned inherited overview after batch reclassification (%s), including across restart', async (mode) => {
+      const memory = StrataGate.inMemory(options); const [moved, unchanged] = await seed(memory, 2);
+      const events = memory.listAllEvents(); const now = new Date().toISOString();
+      const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);
+      const initial = directory.claim(events, now)!;
+      const oldTitle = mode === 'default-kind' ? '发展脉络' : mode === 'normalized' ? 'ai  研究' : '旧小节';
+      const orphan = { kind: 'history' as const, text: '旧总览', sourceEventIds: [moved!.id],
+        ...(mode === 'default-kind' ? {} : { title: mode === 'normalized' ? 'ＡＩ　研究' : oldTitle }) };
+      const retained = { kind: 'scope' as const, title: '未变化小节', text: '保留总览', sourceEventIds: [unchanged!.id] };
+      const { topicIds: [id] } = directory.complete(initial.jobId, { topics: [{ title: '项目', description: '资料',
+        sourceEventIds: [moved!.id, unchanged!.id], overview: [orphan, retained], sections: [
+          { title: oldTitle, sourceEventIds: [moved!.id] }, { title: retained.title, sourceEventIds: [unchanged!.id] },
+        ],
+      }] }, events, now);
+      const pending = directory.snapshot(); delete pending.projectedVersions[moved!.id]; directory.restore(pending);
+      const next = directory.claim(events, now)!;
+      expect(next.events.map(({ id }) => id)).toEqual([moved!.id]);
+      const added = { kind: 'history' as const, title: '新小节', text: '新总览', sourceEventIds: [moved!.id] };
+      const result = { topics: [{ topicId: id!, title: '项目', description: '资料', sourceEventIds: [moved!.id],
+        sections: [{ title: added.title, sourceEventIds: [moved!.id] }],
+        overview: mode === 'copied' ? [orphan] : mode === 'new-summary' ? [added] : [],
+      }] };
+      directory.complete(next.jobId, result, events, now);
+      const stored = directory.snapshot().topics.find((topic) => topic.id === id)!;
+      expect(stored.sections).toEqual([
+        { title: retained.title, sourceEventIds: [unchanged!.id] }, { title: added.title, sourceEventIds: [moved!.id] },
+      ]);
+      expect(stored.overview).toEqual(mode === 'new-summary' ? [added, retained] : [retained]);
+      expect(stored.sourceEventIds).toEqual([moved!.id, unchanged!.id]);
+      const snapshot = directory.snapshot();
+      expect(directory.complete(next.jobId, result, events, now).topicIds).toEqual([id]);
+      expect(directory.snapshot()).toEqual(snapshot);
+      const restarted = new MemoryTopicDirectory(); restarted.restore(snapshot);
+      expect(restarted.list(events).find((topic) => topic.id === id)).toMatchObject({
+        sections: stored.sections, overview: stored.overview,
+      });
+      await memory.close();
+    },
+  );
+
+  it.each(['explicit', 'legacy'] as const)('keeps overview when its section survives batch reprocessing (%s)', async (mode) => {
+    const memory = StrataGate.inMemory(options); const [moved, remaining] = await seed(memory, 2);
+    const events = memory.listAllEvents(); const now = new Date().toISOString();
+    const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);
+    const initial = directory.claim(events, now)!;
+    const paragraph = { kind: 'scope' as const, title: '旧小节', text: '旧总览', sourceEventIds: [moved!.id] };
+    const { topicIds: [id] } = directory.complete(initial.jobId, { topics: [{ title: '项目', description: '资料',
+      sourceEventIds: [moved!.id, remaining!.id], overview: [paragraph],
+      sections: [{ title: paragraph.title, sourceEventIds: [moved!.id, remaining!.id] }],
+    }] }, events, now);
+    const pending = directory.snapshot(); delete pending.projectedVersions[moved!.id]; directory.restore(pending);
+    const next = directory.claim(events, now)!;
+    directory.complete(next.jobId, { topics: [{ topicId: id!, title: '项目', description: '资料', sourceEventIds: [moved!.id],
+      overview: [], ...(mode === 'explicit' ? { sections: [{ title: '新小节', sourceEventIds: [moved!.id] }] } : {}),
+    }] }, events, now);
+    const topic = directory.list(events).find((topic) => topic.id === id)!;
+    expect(topic.overview).toEqual([paragraph]);
+    expect(topic.sections!.find((section) => section.title === paragraph.title)!.sourceEventIds)
+      .toEqual(mode === 'explicit' ? [remaining!.id] : [moved!.id, remaining!.id]);
+    await memory.close();
+  });
+
+  it.each(['named', 'default-kind'] as const)('rejects new overview attached to a section removed by this batch atomically (%s)', async (mode) => {
+    const memory = StrataGate.inMemory(options); const [event] = await seed(memory);
+    const events = memory.listAllEvents(); const now = new Date().toISOString();
+    const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);
+    const initial = directory.claim(events, now)!; const oldTitle = mode === 'named' ? '旧小节' : '发展脉络';
+    const { topicIds: [id] } = directory.complete(initial.jobId, { topics: [{ title: '项目', description: '资料',
+      sourceEventIds: [event!.id], sections: [{ title: oldTitle, sourceEventIds: [event!.id] }], overview: [],
+    }] }, events, now);
+    const pending = directory.snapshot(); delete pending.projectedVersions[event!.id]; directory.restore(pending);
+    const next = directory.claim(events, now)!; const before = directory.snapshot();
+    const result = { topics: [{ topicId: id!, title: '项目', description: '资料', sourceEventIds: [event!.id],
+      sections: [{ title: '新小节', sourceEventIds: [event!.id] }], overview: [{ kind: 'history' as const,
+        ...(mode === 'named' ? { title: oldTitle } : {}), text: '新总览', sourceEventIds: [event!.id] }],
+    }] };
+    expect(() => directory.complete(next.jobId, result, events, now)).toThrow(/overview.*section/i);
+    expect(directory.snapshot()).toEqual(before);
+    result.topics[0]!.overview = [];
+    expect(directory.complete(next.jobId, result, events, now).topicIds).toEqual([id]);
+    await memory.close();
   });
 
   it.each(['missing', 'foreign', 'duplicate'] as const)('rejects %s explicit section assignments atomically', async (invalid) => {

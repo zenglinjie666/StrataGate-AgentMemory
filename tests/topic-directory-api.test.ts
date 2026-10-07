@@ -92,6 +92,32 @@ async function request(runtime: StrataGateRuntime, path = 'topics', method = 'GE
 }
 
 describe('read-only Topic Directory admin data', () => {
+  it('does not recreate an orphan overview section in the directory or paging after reclassification', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = [event('moved')];
+    const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);
+    const initial = directory.claim(snapshot.events, now)!;
+    const { topicIds: [id] } = directory.complete(initial.jobId, { topics: [{ title: '项目', description: '资料',
+      sourceEventIds: ['moved'], sections: [{ title: '旧小节', sourceEventIds: ['moved'] }],
+      overview: [{ kind: 'history', title: '旧小节', text: '旧总览', sourceEventIds: ['moved'] }],
+    }] }, snapshot.events, now);
+    const pending = directory.snapshot(); delete pending.projectedVersions.moved; directory.restore(pending);
+    const next = directory.claim(snapshot.events, now)!;
+    directory.complete(next.jobId, { topics: [{ topicId: id!, title: '项目', description: '资料', sourceEventIds: ['moved'],
+      sections: [{ title: '新小节', sourceEventIds: ['moved'] }], overview: [],
+    }] }, snapshot.events, now);
+    snapshot.memoryTopicState = directory.snapshot();
+    const runtime = fakeRuntime(snapshot); const before = JSON.stringify(snapshot);
+    const response = await request(runtime);
+    expect(response.status).toBe(200);
+    expect(response.body.topics[0].sections.map((section: any) => [section.title, section.sourceEventCount, section.paragraphs.length]))
+      .toEqual([['新小节', 1, 0]]);
+    expect(response.body.topics[0].coverage).toMatchObject({ totalEvents: 1, summarizedEvents: 0, unassignedEvents: 0 });
+    const page = await request(runtime, `topic-events&topicId=${id}&sectionKey=${memoryTopicSectionKey('新小节')}`);
+    expect(page.status).toBe(200); expect(page.body.items.map((item: any) => item.id)).toEqual(['moved']);
+    expect((await request(runtime, `topic-events&topicId=${id}&sectionKey=${memoryTopicSectionKey('旧小节')}`)).status).toBe(404);
+    expect(JSON.stringify(snapshot)).toBe(before);
+  });
+
   it('indexes uncited and summary-free section members while leaving only genuinely unassigned events in uncovered', async () => {
     const snapshot = emptySnapshot(); snapshot.events = ['cited', 'uncited', 'no-summary', 'unassigned'].map(event);
     snapshot.memoryTopicState = freeze(snapshot.events);

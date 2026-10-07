@@ -618,22 +618,7 @@ export class MemoryTopicDirectory {
       }
       if (proposal.sections !== undefined && ids.some((eventId) => batchIds.has(eventId)
         && !assignments.some((section) => section.sourceEventIds.includes(eventId)))) throw new Error('Topic sections omitted batch events.');
-      if (proposal.sections !== undefined) {
-        const inheritedSections = existing && !existing.invalidated ? memoryTopicMembershipSections(existing) : [];
-        const titles = [...assignments, ...inheritedSections].map((section) => section.title);
-        for (const part of proposal.overview) {
-          const preserved = existing && !existing.invalidated && existing.overview.some((old) => digest(old) === digest(part));
-          if (!preserved && !memoryTopicOverviewMatchesSection(part, titles)) {
-            throw new Error('New topic overview must match a declared or inherited section.');
-          }
-        }
-      }
       const membership = unique([...(existing?.sourceEventIds ?? []).filter((eventId) => sources.has(eventId)), ...ids]);
-      const inherited = existing && !existing.invalidated ? existing.overview : [];
-      const overview = unique(proposal.overview.map((part) => JSON.stringify(part))).map((part) => JSON.parse(part) as MemoryTopicOverview);
-      // Eight limits one model response, not the accumulated chapter. Never
-      // silently evict a valid paragraph or its section to admit newer prose.
-      for (const part of inherited) if (!overview.some((current) => digest(current) === digest(part))) overview.push(structuredClone(part));
       // Only batch Events can be reclassified. Confirming one old relation
       // cannot erase that Event's other memberships; legacy callers only append.
       const assignedIds = new Set(proposal.sections === undefined ? [] : assignments
@@ -647,8 +632,24 @@ export class MemoryTopicDirectory {
         if (section) section.sourceEventIds = unique([...section.sourceEventIds, ...assignment.sourceEventIds]);
         else sections.push({ title: assignment.title.trim(), sourceEventIds: [...assignment.sourceEventIds] });
       }
+      const finalSections = sections.filter((section) => section.sourceEventIds.length > 0);
+      const titles = finalSections.map((section) => section.title);
+      const inherited = existing && !existing.invalidated ? existing.overview : [];
+      // Validate against the final directory: reclassification can remove an
+      // inherited title. Copied old prose is still inherited, not a new summary.
+      if (proposal.sections !== undefined) for (const part of proposal.overview) {
+        if (!inherited.some((old) => digest(old) === digest(part)) && !memoryTopicOverviewMatchesSection(part, titles)) {
+          throw new Error('New topic overview must match a final topic section.');
+        }
+      }
+      const overview = unique(proposal.overview.filter((part) => memoryTopicOverviewMatchesSection(part, titles))
+        .map((part) => JSON.stringify(part))).map((part) => JSON.parse(part) as MemoryTopicOverview);
+      // Eight limits one model response, not accumulated prose. Keep old prose
+      // only while its section exists; never restore membership to save prose.
+      for (const part of inherited) if (memoryTopicOverviewMatchesSection(part, titles)
+        && !overview.some((current) => digest(current) === digest(part))) overview.push(structuredClone(part));
       proposals.push({ id: topicId, title: proposal.title.trim(), description: proposal.description.trim(),
-        sourceEventIds: membership, overview, sections: sections.filter((section) => section.sourceEventIds.length > 0),
+        sourceEventIds: membership, overview, sections: finalSections,
         sourceVersions: Object.fromEntries(membership.map((eventId) => [eventId, versions.get(eventId)!])),
         dependencyVersions: { ...(!existing?.invalidated ? existing?.dependencyVersions ?? {} : {}), ...job.dependencyVersions },
         projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, invalidated: false,
