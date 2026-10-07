@@ -169,17 +169,28 @@ export function renderMemoryDirectory(topics: readonly MemoryTopic[], events: re
 }
 
 export function boundedTopic(topic: MemoryTopic, envelope: Record<string, unknown> = {}) {
-  // The full membership index belongs to server-side directory pagination,
-  // not the bounded model expansion payload.
+  // Keep lightweight section navigation, including summary-free sections.
+  // Full membership relations remain behind server-side Event pagination.
   const { sections: _sections, ...summaryTopic } = topic
+  const sectionIndex = memoryTopicSections(topic).map(({ title, sourceEventIds }) => ({ title, sourceEventCount: sourceEventIds.length }))
+  const sections: typeof sectionIndex = []
   const overview: MemoryTopic['overview'] = []
   const sourceEventIds = topic.sourceEventIds.slice(0, 12)
-  const result = (parts: MemoryTopic['overview']) => ({
+  const result = (parts: MemoryTopic['overview'], selectedSections = sections) => ({
     ...summaryTopic, sourceEventIds, overview: parts,
+    sections: selectedSections,
+    totalSections: sectionIndex.length,
+    omittedSections: sectionIndex.length - selectedSections.length,
     totalSourceEvents: topic.sourceEventIds.length,
     omittedSourceEvents: topic.sourceEventIds.length - sourceEventIds.length,
     omittedOverviewParagraphs: topic.overview.length - parts.length,
   })
+  // The index is the route into Events even when no prose was generated.
+  // Admit it first, with counts and the response envelope inside the budget.
+  for (const section of sectionIndex) {
+    if (estimateTokens(JSON.stringify({ ...envelope, topic: result(overview, [...sections, section]) })) > TOPIC_OVERVIEW_TOKEN_BUDGET) break
+    sections.push(section)
+  }
   for (const paragraph of topic.overview) {
     if (estimateTokens(JSON.stringify({ ...envelope, topic: result([...overview, paragraph]) })) <= TOPIC_OVERVIEW_TOKEN_BUDGET) overview.push(paragraph)
   }

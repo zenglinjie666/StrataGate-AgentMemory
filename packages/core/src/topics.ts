@@ -618,8 +618,10 @@ export class MemoryTopicDirectory {
       // Eight limits one model response, not the accumulated chapter. Never
       // silently evict a valid paragraph or its section to admit newer prose.
       for (const part of inherited) if (!overview.some((current) => digest(current) === digest(part))) overview.push(structuredClone(part));
-      // Legacy callers append evidence, not explicit reclassification commands.
-      const assignedIds = new Set(proposal.sections === undefined ? [] : assignments.flatMap((section) => section.sourceEventIds));
+      // Only batch Events can be reclassified. Confirming one old relation
+      // cannot erase that Event's other memberships; legacy callers only append.
+      const assignedIds = new Set(proposal.sections === undefined ? [] : assignments
+        .flatMap((section) => section.sourceEventIds).filter((eventId) => batchIds.has(eventId)));
       const sections = existing && !existing.invalidated ? memoryTopicMembershipSections(existing) : [];
       const memberIds = new Set(membership);
       for (const section of sections) section.sourceEventIds = section.sourceEventIds.filter((eventId) =>

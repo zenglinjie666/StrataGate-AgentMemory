@@ -418,6 +418,32 @@ describe('memory topic runtime boundaries', () => {
     }
   })
 
+  it('exposes summary-free sections through the actual Agent expand path without full memberships', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-section-index-'));
+    const database = join(directory, 'memory.db'); const session = makeSession('topic-section-index');
+    const runtime = new StrataGateRuntime(makeConfig(database), makeModels().models);
+    try {
+      const namespace = runtime.namespaceFor(session); await seed(database, namespace, deploymentEvents.slice(0, 2), false);
+      const writer = await StrataGate.open({ database, namespace }); let topicId: string;
+      try {
+        const context = (await writer.claimNextTopicProjection())!; const sources = context.events.map(({ id }) => id);
+        topicId = (await writer.completeTopicProjection(context.jobId, { topics: [{ title: '学术背景', description: '学术资料',
+          sourceEventIds: sources, overview: [], sections: [
+            { title: '研究方向', sourceEventIds: [sources[0]!] }, { title: '教育背景', sourceEventIds: [sources[1]!] },
+          ],
+        }] })).topicIds[0]!;
+      } finally { await writer.close(); }
+      const expanded = await runtime.expandTopic(session, topicId) as { topic: {
+        overview: unknown[]; sections: Array<{ title: string; sourceEventCount: number }>; totalSections: number; omittedSections: number;
+      } };
+      expect(expanded.topic.overview).toEqual([]);
+      expect(expanded.topic.sections).toEqual([{ title: '研究方向', sourceEventCount: 1 }, { title: '教育背景', sourceEventCount: 1 }]);
+      expect(expanded.topic.totalSections).toBe(2); expect(expanded.topic.omittedSections).toBe(0);
+      expect(expanded.topic.sections.every((section) => !('sourceEventIds' in section))).toBe(true);
+      expect(estimateTokens(JSON.stringify(expanded))).toBeLessThanOrEqual(2_400);
+    } finally { await runtime.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('bounds the whole expanded response and reports omitted overview paragraphs', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-expanded-budget-'))
     const database = join(directory, 'memory.db')

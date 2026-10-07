@@ -20,11 +20,36 @@ describe('shared memory directory order', () => {
     const chapter = topic('large', '2026-10-01T00:00:00.000Z', Array.from({ length: 10_000 }, (_, index) => `member-${index}`));
     chapter.sections = [{ title: '研究方向', sourceEventIds: [...chapter.sourceEventIds] }];
     const before = JSON.stringify(chapter); const expanded = boundedTopic(chapter);
-    expect(expanded).not.toHaveProperty('sections');
+    expect(expanded.sections).toEqual([{ title: '研究方向', sourceEventCount: 10_000 }]);
+    expect(expanded.totalSections).toBe(1);
+    expect(expanded.omittedSections).toBe(0);
     expect(expanded.sourceEventIds).toHaveLength(12);
     expect(expanded.omittedSourceEvents).toBe(9_988);
     expect(estimateTokens(JSON.stringify(expanded))).toBeLessThanOrEqual(TOPIC_OVERVIEW_TOKEN_BUDGET);
     expect(JSON.stringify(chapter)).toBe(before);
+  });
+
+  it('bounds a large lightweight section index and reports every omitted section without leaking member ids', () => {
+    const chapter = topic('large-index', '2026-10-01T00:00:00.000Z', ['member']);
+    chapter.sections = Array.from({ length: 300 }, (_, index) => ({ title: `类别 ${index} ${'长期类别'.repeat(15)}`, sourceEventIds: ['member'] }));
+    chapter.overview = Array.from({ length: 8 }, (_, index) => ({ kind: 'scope' as const, title: chapter.sections![index]!.title,
+      text: '资料范围'.repeat(100), sourceEventIds: ['member'] }));
+    const envelope = { namespace: 'dsh:project:budget', navigationOnly: true, note: '这是导航，需要继续查证事件。' };
+    const expanded = boundedTopic(chapter, envelope);
+    expect(expanded.sections.length).toBeGreaterThan(0);
+    expect(expanded.omittedSections).toBeGreaterThan(0);
+    expect(expanded.sections.length + expanded.omittedSections).toBe(300);
+    expect(expanded.totalSections).toBe(300);
+    expect(expanded.overview.length + expanded.omittedOverviewParagraphs).toBe(8);
+    expect(expanded.sections.every((section) => Object.keys(section).sort().join(',') === 'sourceEventCount,title')).toBe(true);
+    expect(expanded.sections.every((section) => section.sourceEventCount === 1)).toBe(true);
+    expect(estimateTokens(JSON.stringify({ ...envelope, topic: expanded }))).toBeLessThanOrEqual(TOPIC_OVERVIEW_TOKEN_BUDGET);
+  });
+
+  it('keeps known legacy section labels in the Agent navigation index', () => {
+    const chapter = topic('legacy', '2026-10-01T00:00:00.000Z', ['E1', 'E2']);
+    chapter.overview = [{ kind: 'scope', title: '研究方向', text: '资料范围', sourceEventIds: ['E1', 'E2'] }];
+    expect(boundedTopic(chapter).sections).toEqual([{ title: '研究方向', sourceEventCount: 2 }]);
   });
 
   it('keeps same-batch chapters in immutable ID order when their titles change', () => {

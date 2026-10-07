@@ -77,7 +77,7 @@ describe('rebuildable Event-backed topic directory', () => {
     expect(directory.list(events)[0]!.sections).toEqual([{ title: '背景', sourceEventIds: [events[0]!.id] }]);
   });
 
-  it('keeps independent memberships when a legacy caller appends a summary citing only one of them', async () => {
+  it.each(['legacy', 'explicit'] as const)('keeps other memberships of non-batch Events in a %s update', async (mode) => {
     const memory = StrataGate.inMemory(options); const [original] = await seed(memory);
     const job = (await memory.claimNextTopicProjection())!;
     const oldParagraph = { kind: 'scope' as const, title: '研究方向', text: '研究资料', sourceEventIds: [original!.id] };
@@ -90,8 +90,34 @@ describe('rebuildable Event-backed topic directory', () => {
     await memory.completeTopicProjection(next.jobId, { topics: [{ topicId: id!, title: '学术背景', description: '资料',
       sourceEventIds: [original!.id, added!.id], overview: [oldParagraph,
         { kind: 'scope', title: '研究方向', text: '新增研究资料', sourceEventIds: [added!.id] }],
+      ...(mode === 'explicit' ? { sections: [{ title: '研究方向', sourceEventIds: [original!.id, added!.id] }] } : {}),
     }] });
+    expect(new Set(memory.getMemoryTopic(id!)!.sections!.find((section) => section.title === '研究方向')!.sourceEventIds)).toEqual(new Set([original!.id, added!.id]));
     expect(memory.getMemoryTopic(id!)!.sections!.find((section) => section.title === '教育背景')!.sourceEventIds).toEqual([original!.id]);
+    const restarted = new MemoryTopicDirectory(); restarted.restore(memory.exportSnapshot().memoryTopicState);
+    expect(restarted.list(memory.listAllEvents()).find((topic) => topic.id === id)!.sections).toEqual(memory.getMemoryTopic(id!)!.sections);
+  });
+
+  it('reclassifies only batch Events while keeping the other shared memberships', async () => {
+    const memory = StrataGate.inMemory(options); const [current, other] = await seed(memory, 2);
+    const events = memory.listAllEvents(); const now = new Date().toISOString();
+    const directory = new MemoryTopicDirectory(); directory.initializeBootstrap([], now);
+    const initial = directory.claim(events, now)!;
+    const originalIds = [current!.id, other!.id];
+    const { topicIds: [id] } = directory.complete(initial.jobId, { topics: [{ title: '学术背景', description: '资料',
+      sourceEventIds: originalIds, overview: [{ kind: 'scope', title: '研究方向', text: '资料范围', sourceEventIds: originalIds }],
+      sections: [{ title: '研究方向', sourceEventIds: originalIds }, { title: '教育背景', sourceEventIds: originalIds }],
+    }] }, events, now);
+    const snapshot = directory.snapshot(); delete snapshot.projectedVersions[current!.id]; directory.restore(snapshot);
+    const [added] = await seed(memory); const allEvents = memory.listAllEvents();
+    const next = directory.claim(allEvents, now)!;
+    expect(new Set(next.events.map(({ id }) => id))).toEqual(new Set([current!.id, added!.id]));
+    directory.complete(next.jobId, { topics: [{ topicId: id!, title: '学术背景', description: '资料', sourceEventIds: [current!.id, added!.id],
+      sections: [{ title: '研究方向', sourceEventIds: [current!.id, added!.id] }], overview: [],
+    }] }, allEvents, now);
+    const sections = directory.list(allEvents).find((topic) => topic.id === id)!.sections!;
+    expect(sections.find((section) => section.title === '教育背景')!.sourceEventIds).toEqual([other!.id]);
+    expect(new Set(sections.find((section) => section.title === '研究方向')!.sourceEventIds)).toEqual(new Set([...originalIds, added!.id]));
   });
 
   it.each(['missing', 'foreign', 'duplicate'] as const)('rejects %s explicit section assignments atomically', async (invalid) => {
