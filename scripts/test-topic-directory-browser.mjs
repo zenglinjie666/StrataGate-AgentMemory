@@ -383,13 +383,19 @@ try {
       await directory.locator('.sg-topic-bootstrap').getByText(/1 条历史记忆暂未完成整理/).waitFor()
       await directory.getByRole('button', { name: '查看详情', exact: true }).click()
       await directory.locator('.sg-topic-failure-technical summary').click()
-      await directory.getByText(/timeout/).waitFor()
+      await directory.getByText('validation-failed: every supplied batch Event must be assigned to a topic', { exact: true }).waitFor()
+      const diagnostics = await directory.locator('.sg-topic-failure-technical pre').textContent()
+      assert.equal(JSON.parse(diagnostics).maxOutputTokens, 32768)
+      assert.equal(JSON.parse(diagnostics).category, 'validation-failed')
+      assert.equal(JSON.parse(diagnostics).attempt, 3)
+      assert.ok(!diagnostics.includes(fixtures.raw))
+      await capture('topic-history-failure-diagnostics')
     } else {
       assert.equal(await directory.locator('.sg-topic-bootstrap').count(), 0)
       if (variant === 'empty') assert.equal(await directory.locator('.sg-topic-chapter').count(), 0)
     }
   }
-  checks.push('bootstrap-pending-running-completed-failed-empty')
+  checks.push('bootstrap-pending-running-completed-failed-empty-safe-failure-diagnostics')
 
   await selectNamespace(fixtures.normal)
   assert.equal(await chapter(1).locator('.sg-topic-section').count(), 5)

@@ -197,6 +197,12 @@ config:
   # model: deepseek-chat
 ```
 
+Topic Projection has an independent output bound of 32,768 tokens. Advertised model context capacity can lower it after subtracting estimated input and a 1,024-token margin. Other memory tasks retain their existing budget policies. The Host's `defaultMaxTokens` is a default, not a hard capacity declaration; unadvertised provider limits can still fail a request.
+
+Topic technical details and task details in `/api/stratagate/overview` distinguish `max-tokens`, `schema-invalid`, `validation-failed`, `timeout`, `provider-failed`, `worker-failed`, and `source-changed`. Diagnostics retain only safe validation rules and numeric/runtime metadata, never raw chat, Event/Topic prose, full model responses, or reasoning. `requested-unverified` means off was requested, not that the provider honored it; observed reasoning is marked separately.
+
+Only explicit `finish=max-tokens` splits a failed batch in half, with at most four levels and three attempts per singleton. Each historical child still consumes the shared Bootstrap allowance, without trimming Event evidence. Other failures keep bounded retry and backoff. After automatic attempts are exhausted, the directory retry action (`POST /api/stratagate/topics/retry`, with namespace, jobId and expectedRevision) or `POST /api/stratagate/jobs/retry?namespace=...&kind=topic-projection&jobId=...` queues a fresh job ID. Both paths enforce source versions, reject old results, and persist across restart. Upgrades never automatically revive historical terminal failures.
+
 `blockTurnSize` and `blockDecayLambda` are initial fallbacks. Once changed in **Advanced Settings**, persisted UI values take precedence. λ defaults to `0.3`; smaller values forget more slowly and consume more tokens, and values above `0.4` are not recommended.
 
 `project` derives a stable namespace from the normalized session working directory. `session` isolates every DSH session. `global` shares one namespace.

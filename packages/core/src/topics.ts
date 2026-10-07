@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { bm25Rank, weightedSearchTokens } from './search.js';
 import type { EventCard } from './types.js';
+import { TopicProjectionError, safeTopicDiagnostics, type TopicProjectionDiagnostics } from './topic-diagnostics.js';
 
 export const MEMORY_TOPIC_PROJECTOR_VERSION = 3;
 export const TOPIC_BATCH_LIMIT = 12;
@@ -99,6 +100,9 @@ export interface TopicProjectionJob {
   leaseUntil?: string | null;
   superseded?: boolean;
   sectionBackfillTopicId?: string;
+  diagnostics?: TopicProjectionDiagnostics | undefined;
+  /** Bounded binary split ancestry; manual retry starts a fresh cycle. */
+  splitDepth?: number;
 }
 
 export type TopicProjectionMode = 'all' | 'incremental' | 'bootstrap';
@@ -370,6 +374,8 @@ export class MemoryTopicDirectory {
       job.status = 'failed'; job.context = null; job.nextRetryAt = null; job.leaseUntil = null;
       job.superseded = true;
       job.lastError = 'source-changed'; job.updatedAt = now;
+      job.diagnostics = safeTopicDiagnostics({ ...job.diagnostics, category: 'source-changed',
+        reason: 'source version changed; stale result rejected', eventCount: job.sourceEventIds.length, attempt: job.attempts });
     }
     const finished = this.state.jobs.filter((job) => job.status === 'completed'
       || (job.status === 'failed' && job.nextRetryAt === null));
@@ -406,6 +412,9 @@ export class MemoryTopicDirectory {
   recover(now: string): void {
     for (const job of this.state.jobs) if (job.status === 'running'
       && Date.parse(job.leaseUntil ?? job.updatedAt) <= Date.parse(now)) {
+      job.diagnostics = safeTopicDiagnostics({ category: 'timeout', reason: 'topic projection lease expired',
+        eventCount: job.sourceEventIds.length, candidateTopicCount: job.context?.existingTopics.length,
+        attempt: job.attempts, splitDepth: job.splitDepth ?? 0 });
       job.status = 'failed'; job.lastError = 'timeout'; job.context = null;
       job.nextRetryAt = job.attempts < TOPIC_MAX_ATTEMPTS ? now : null;
       job.leaseUntil = null;
@@ -458,7 +467,7 @@ export class MemoryTopicDirectory {
       || !jobInputsCurrent(running, versions);
     return this.pendingWork(events).some(({ event, sectionBackfillTopicId }) => this.matchesMode([event.id], versions, mode, sectionBackfillTopicId)) || this.state.jobs.some((job) =>
       !job.superseded && job.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION && job.attempts < TOPIC_MAX_ATTEMPTS
-      && (job.status === 'pending' || (job.status === 'failed'
+      && ((job.status === 'pending' && (job.nextRetryAt === null || Date.parse(job.nextRetryAt) <= now)) || (job.status === 'failed'
         && job.nextRetryAt !== null && Date.parse(job.nextRetryAt) <= now))
       && jobInputsCurrent(job, versions) && this.matchesMode(job.sourceEventIds, versions, mode, job.sectionBackfillTopicId));
   }
@@ -474,7 +483,7 @@ export class MemoryTopicDirectory {
     const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
     const versions = sourceVersions(sources);
     const eligible = this.state.jobs.filter((job) => !job.superseded && job.attempts < TOPIC_MAX_ATTEMPTS
-      && (job.status === 'pending' || (job.status === 'failed' && job.nextRetryAt !== null
+      && ((job.status === 'pending' && (job.nextRetryAt === null || Date.parse(job.nextRetryAt) <= Date.parse(now))) || (job.status === 'failed' && job.nextRetryAt !== null
         && Date.parse(job.nextRetryAt) <= Date.parse(now)))
       && jobInputsCurrent(job, versions) && this.matchesMode(job.sourceEventIds, versions, mode, job.sectionBackfillTopicId))
       .sort((a, b) => Number(this.isBootstrap(a.sourceEventIds[0]!, versions.get(a.sourceEventIds[0]!)!, a.sectionBackfillTopicId))
@@ -583,6 +592,7 @@ export class MemoryTopicDirectory {
           ? Object.keys(storedById.get(topic.id)!.dependencyVersions ?? {}).filter((id) => sources.has(id)) : []),
       ])]);
     job.dependencyVersions = Object.fromEntries(dependencyIds.map((id) => [id, versions.get(id)!]));
+    job.diagnostics = undefined;
     job.status = 'running'; job.attempts += 1; job.lastError = null; job.nextRetryAt = null; job.updatedAt = now;
     if (this.state.bootstrap.status === 'pending' && this.matchesMode(job.sourceEventIds, versions, 'bootstrap', job.sectionBackfillTopicId)) {
       this.state.bootstrap.status = 'running';
@@ -595,18 +605,18 @@ export class MemoryTopicDirectory {
     const job = this.requireJob(id);
     if (job.status === 'completed') return { topicIds: [...job.topicIds] };
     if (job.status !== 'running' || !job.context) throw new Error(`Topic projection ${id} is not running`);
-    if (Date.parse(job.leaseUntil ?? job.updatedAt) <= Date.parse(now)) throw new Error('Topic projection lease expired; stale result rejected.');
+    if (Date.parse(job.leaseUntil ?? job.updatedAt) <= Date.parse(now)) throw new TopicProjectionError('source-changed', 'Topic projection lease expired; stale result rejected.');
     const sources = new Map(events.filter(visible).map((event) => [event.id, event]));
     const versions = sourceVersions(sources);
     if (!jobInputsCurrent(job, versions)
       || Object.entries(job.candidateVersions).some(([topicId, version]) =>
         digest(this.state.topics.find((topic) => topic.id === topicId)) !== version)) {
-      throw new Error('Topic projection source version changed; stale result rejected.');
+      throw new TopicProjectionError('source-changed', 'Topic projection source version changed; stale result rejected.');
     }
-    if (!Array.isArray(result?.topics) || result.topics.length < 1 || result.topics.length > 12) throw new Error('Topic projection must return 1-12 topics.');
+    if (!Array.isArray(result?.topics) || result.topics.length < 1 || result.topics.length > 12) throw new TopicProjectionError('validation-failed', 'Topic projection must return 1-12 topics.');
     if (job.sectionBackfillTopicId && (result.topics.length !== 1
       || result.topics[0]!.topicId !== job.sectionBackfillTopicId || result.topics[0]!.sections === undefined)) {
-      throw new Error('Invalid section backfill: explicit sections must cover the existing chapter.');
+      throw new TopicProjectionError('validation-failed', 'Invalid section backfill: explicit sections must cover the existing chapter.');
     }
     const candidates = new Map(job.context.existingTopics.map((topic) => [topic.id, topic]));
     const allowed = new Set([...job.sourceEventIds, ...job.context.existingTopics.flatMap((topic) => topic.sourceEventIds)]);
@@ -617,7 +627,7 @@ export class MemoryTopicDirectory {
     const proposals: StoredMemoryTopic[] = [];
     const checkIds = (ids: string[], label: string): string[] => {
       if (!Array.isArray(ids) || ids.length === 0 || unique(ids).length !== ids.length
-        || ids.some((eventId) => typeof eventId !== 'string' || !allowed.has(eventId))) throw new Error(`Invalid topic ${label} source events.`);
+        || ids.some((eventId) => typeof eventId !== 'string' || !allowed.has(eventId))) throw new TopicProjectionError('validation-failed', `Invalid topic ${label} source events.`);
       return ids;
     };
     for (const proposal of result.topics) {
@@ -635,55 +645,55 @@ export class MemoryTopicDirectory {
       // A bounded shortlist is not the global chapter namespace. Never create
       // a duplicate just because the matching chapter was not exposed.
       if (sameLabel.some((topic) => !candidates.has(topic.id))) {
-        throw new Error('Invalid duplicate chapter label matches an unexposed existing topic.');
+        throw new TopicProjectionError('validation-failed', 'Invalid duplicate chapter label matches an unexposed existing topic.');
       }
       const existing = proposal.topicId ? this.state.topics.find((topic) => topic.id === proposal.topicId)
         : inferred ?? (sameLabel.length === 1 ? sameLabel[0] : undefined);
       if (sameLabel.some((topic) => topic.id !== existing?.id)) {
-        throw new Error('Invalid duplicate chapter label conflicts with an existing topic.');
+        throw new TopicProjectionError('validation-failed', 'Invalid duplicate chapter label conflicts with an existing topic.');
       }
       if (typeof proposal.title === 'string') {
         const key = label(proposal.title);
-        if (labels.has(key)) throw new Error('Invalid duplicate chapter label in one projection.');
+        if (labels.has(key)) throw new TopicProjectionError('validation-failed', 'Invalid duplicate chapter label in one projection.');
         labels.add(key);
       }
-      if (proposal.topicId && (!existing || !candidates.has(proposal.topicId))) throw new Error('Unknown or unexposed topic id.');
+      if (proposal.topicId && (!existing || !candidates.has(proposal.topicId))) throw new TopicProjectionError('validation-failed', 'Unknown or unexposed topic id.');
       const topicId = existing?.id ?? `topic_${randomUUID()}`;
-      if (touched.has(topicId)) throw new Error('A topic may be updated only once per projection.');
+      if (touched.has(topicId)) throw new TopicProjectionError('validation-failed', 'A topic may be updated only once per projection.');
       touched.add(topicId);
       if (typeof proposal.title !== 'string' || !proposal.title.trim() || [...proposal.title].length > 120
-        || typeof proposal.description !== 'string' || !proposal.description.trim() || [...proposal.description].length > 400) throw new Error('Invalid topic title or description.');
+        || typeof proposal.description !== 'string' || !proposal.description.trim() || [...proposal.description].length > 400) throw new TopicProjectionError('validation-failed', 'Invalid topic title or description.');
       for (const eventId of ids) if (batchIds.has(eventId)) covered.add(eventId);
-      if (!Array.isArray(proposal.overview) || proposal.overview.length > 8) throw new Error('Topic projection must contain at most 8 overview paragraphs per chapter per batch.');
+      if (!Array.isArray(proposal.overview) || proposal.overview.length > 8) throw new TopicProjectionError('validation-failed', 'Topic projection must contain at most 8 overview paragraphs per chapter per batch.');
       for (const part of proposal.overview) {
         if (part.title !== undefined && (typeof part.title !== 'string' || !part.title.trim()
-          || [...part.title].length > 80)) throw new Error('Invalid topic overview title.');
+          || [...part.title].length > 80)) throw new TopicProjectionError('validation-failed', 'Invalid topic overview title.');
         if (!['history', 'decision', 'change', 'open-question', 'scope'].includes(part.kind)
-          || typeof part.text !== 'string' || !part.text.trim() || [...part.text].length > 600) throw new Error('Invalid topic overview section.');
+          || typeof part.text !== 'string' || !part.text.trim() || [...part.text].length > 600) throw new TopicProjectionError('validation-failed', 'Invalid topic overview section.');
         checkIds(part.sourceEventIds, 'overview');
         if (part.kind !== 'scope' && part.sourceEventIds.some((eventId) => job.context!.truncatedEventIds?.includes(eventId))) {
-          throw new Error('Truncated topic sources permit navigation scope only, not factual overview.');
+          throw new TopicProjectionError('validation-failed', 'Truncated topic sources permit navigation scope only, not factual overview.');
         }
-        if (part.sourceEventIds.length > 12 || part.sourceEventIds.some((eventId) => !ids.includes(eventId))) throw new Error('Overview references must belong to returned topic membership.');
+        if (part.sourceEventIds.length > 12 || part.sourceEventIds.some((eventId) => !ids.includes(eventId))) throw new TopicProjectionError('validation-failed', 'Overview references must belong to returned topic membership.');
         if (part.sourceEventIds.some((eventId) => !batchIds.has(eventId))
-          && !candidates.get(topicId)?.overview.some((old) => digest(old) === digest(part))) throw new Error('Old overview evidence must be preserved verbatim; new sections need batch events.');
+          && !candidates.get(topicId)?.overview.some((old) => digest(old) === digest(part))) throw new TopicProjectionError('validation-failed', 'Old overview evidence must be preserved verbatim; new sections need batch events.');
       }
-      if (proposal.sections !== undefined && !Array.isArray(proposal.sections)) throw new Error('Invalid topic sections.');
+      if (proposal.sections !== undefined && !Array.isArray(proposal.sections)) throw new TopicProjectionError('validation-failed', 'Invalid topic sections.');
       const assignments = memoryTopicMembershipSections(proposal);
       const sectionLabels = new Set<string>();
       for (const section of assignments) {
         if (!section || typeof section.title !== 'string' || !section.title.trim() || [...section.title].length > 80
-          || sectionLabels.has(label(section.title))) throw new Error('Invalid or duplicate topic section title.');
+          || sectionLabels.has(label(section.title))) throw new TopicProjectionError('validation-failed', 'Invalid or duplicate topic section title.');
         sectionLabels.add(label(section.title));
         checkIds(section.sourceEventIds, 'section');
-        if (section.sourceEventIds.some((eventId) => !ids.includes(eventId))) throw new Error('Section references must belong to returned topic membership.');
+        if (section.sourceEventIds.some((eventId) => !ids.includes(eventId))) throw new TopicProjectionError('validation-failed', 'Section references must belong to returned topic membership.');
         if (section.sourceEventIds.some((eventId) => !batchIds.has(eventId))
           && !memoryTopicMembershipSections(existing ?? { overview: [] }).some((old) =>
             label(old.title) === label(section.title) && section.sourceEventIds.filter((eventId) => !batchIds.has(eventId))
-              .every((eventId) => old.sourceEventIds.includes(eventId)))) throw new Error('Old section membership must be preserved; reassignment needs batch events.');
+              .every((eventId) => old.sourceEventIds.includes(eventId)))) throw new TopicProjectionError('validation-failed', 'Old section membership must be preserved; reassignment needs batch events.');
       }
       if (proposal.sections !== undefined && ids.some((eventId) => batchIds.has(eventId)
-        && !assignments.some((section) => section.sourceEventIds.includes(eventId)))) throw new Error('Topic sections omitted batch events.');
+        && !assignments.some((section) => section.sourceEventIds.includes(eventId)))) throw new TopicProjectionError('validation-failed', 'Topic sections omitted batch events.');
       const membership = unique([...(existing?.sourceEventIds ?? []).filter((eventId) => sources.has(eventId)), ...ids]);
       // Only batch Events can be reclassified. Confirming one old relation
       // cannot erase that Event's other memberships; legacy callers only append.
@@ -705,7 +715,7 @@ export class MemoryTopicDirectory {
       // inherited title. Copied old prose is still inherited, not a new summary.
       if (proposal.sections !== undefined) for (const part of proposal.overview) {
         if (!inherited.some((old) => digest(old) === digest(part)) && !memoryTopicOverviewMatchesSection(part, titles)) {
-          throw new Error('New topic overview must match a final topic section.');
+          throw new TopicProjectionError('validation-failed', 'New topic overview must match a final topic section.');
         }
       }
       const overview = unique(proposal.overview.filter((part) => memoryTopicOverviewMatchesSection(part, titles))
@@ -722,7 +732,7 @@ export class MemoryTopicDirectory {
         projectorVersion: MEMORY_TOPIC_PROJECTOR_VERSION, invalidated: false,
         createdAt: existing?.createdAt ?? now, updatedAt: now });
     }
-    if (job.sourceEventIds.some((eventId) => !covered.has(eventId))) throw new Error('Topic projection omitted batch events.');
+    if (job.sourceEventIds.some((eventId) => !covered.has(eventId))) throw new TopicProjectionError('validation-failed', 'every supplied batch Event must be assigned to a topic');
     for (const topic of proposals) {
       const index = this.state.topics.findIndex((current) => current.id === topic.id);
       if (index < 0) this.state.topics.push(topic); else this.state.topics[index] = topic;
@@ -750,15 +760,36 @@ export class MemoryTopicDirectory {
   fail(id: string, error: unknown, now: string): void {
     const job = this.state.jobs.find((candidate) => candidate.id === id);
     if (!job || job.status !== 'running') return;
-    job.status = 'failed'; job.context = null;
-    job.leaseUntil = null;
+    const diagnostic = error instanceof TopicProjectionError ? safeTopicDiagnostics(error.diagnostics) : undefined;
     const message = error instanceof Error ? error.message : String(error);
-    job.lastError = /timeout|timed out/i.test(message) ? 'timeout'
-      : /source.*changed|stale|not running/i.test(message) ? 'source-changed'
-        : /invalid|omitted|unknown|overview|projection must|truncat/i.test(message) ? 'invalid-output' : 'worker-failed';
+    const category = diagnostic?.category ?? (/timeout|timed out/i.test(message) ? 'timeout'
+      : /source.*changed|stale|not running/i.test(message) ? 'source-changed' : 'worker-failed');
+    job.diagnostics = safeTopicDiagnostics({ ...diagnostic, category,
+      reason: diagnostic?.reason ?? (category === 'timeout' ? 'structured model task timed out'
+        : category === 'source-changed' ? 'source version changed; stale result rejected' : 'topic worker failed'),
+      eventCount: job.sourceEventIds.length, candidateTopicCount: diagnostic?.candidateTopicCount ?? job.context?.existingTopics.length,
+      attempt: job.attempts, splitDepth: job.splitDepth ?? 0 });
+    job.status = 'failed'; job.context = null; job.leaseUntil = null;
+    job.lastError = category === 'validation-failed' ? `${category}: ${job.diagnostics!.reason}` : category;
     job.nextRetryAt = job.attempts < TOPIC_MAX_ATTEMPTS
       ? new Date(Date.parse(now) + 30_000 * 2 ** Math.max(0, job.attempts - 1)).toISOString() : null;
     job.updatedAt = now;
+    // Only the bridge's explicit finish=max-tokens signal authorizes splitting.
+    // At most four binary levels (12 -> 6 -> 3 -> 2 -> 1), then three
+    // ordinary attempts. Every child retains the immutable source versions.
+    if (category === 'max-tokens' && diagnostic?.finishReason === 'max-tokens'
+      && job.sourceEventIds.length > 1 && (job.splitDepth ?? 0) < 4) {
+      const middle = Math.ceil(job.sourceEventIds.length / 2);
+      for (const ids of [job.sourceEventIds.slice(0, middle), job.sourceEventIds.slice(middle)]) {
+        this.state.jobs.push({ ...structuredClone(job), id: `tproj_${randomUUID()}`,
+          sourceEventIds: ids, sourceVersions: Object.fromEntries(ids.map((id) => [id, job.sourceVersions[id]!])),
+          dependencyVersions: {}, candidateVersions: {}, status: 'pending', attempts: 0,
+          diagnostics: undefined, splitDepth: (job.splitDepth ?? 0) + 1,
+          topicIds: [], superseded: false, lastError: null, nextRetryAt: job.nextRetryAt,
+          createdAt: now, updatedAt: now });
+      }
+      job.superseded = true; job.nextRetryAt = null;
+    }
   }
 
   private requireJob(id: string): TopicProjectionJob {
@@ -781,6 +812,7 @@ export class MemoryTopicDirectory {
     const job: TopicProjectionJob = {
       ...structuredClone(previous), id: `tproj_${randomUUID()}`, status: 'pending', attempts: 0,
       superseded: false, context: null, dependencyVersions: {}, candidateVersions: {}, topicIds: [],
+      diagnostics: undefined, splitDepth: 0,
       lastError: null, nextRetryAt: null, leaseUntil: null, createdAt: now, updatedAt: now,
     };
     previous.superseded = true;

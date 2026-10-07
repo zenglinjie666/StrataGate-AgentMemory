@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { StrataGate, MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, TOPIC_LEASE_MS, normalizeSnapshot, memoryTopicEventFingerprint, type TopicProjectionContext, type TopicProjectionResult } from '../src/index.js';
+import { StrataGate, MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, TOPIC_LEASE_MS, normalizeSnapshot, memoryTopicEventFingerprint, TopicProjectionError, type TopicProjectionContext, type TopicProjectionResult } from '../src/index.js';
 import { SqliteStorage } from '../src/sqlite.js';
 
 const summarizer = async () => ({ l0Title: '对话', l0Tags: [], l1Summary: '对话', l2Keypoints: [], shouldExtract: false });
@@ -822,7 +822,7 @@ describe('rebuildable Event-backed topic directory', () => {
     await expect(memory.completeTopicProjection(context.jobId, invalid)).rejects.toThrow(/Invalid topic/);
     const omitted = projection(context);
     omitted.topics[0]!.sourceEventIds.pop(); omitted.topics[0]!.overview = [];
-    await expect(memory.completeTopicProjection(context.jobId, omitted)).rejects.toThrow(/omitted batch/);
+    await expect(memory.completeTopicProjection(context.jobId, omitted)).rejects.toThrow('every supplied batch Event must be assigned to a topic');
     await expect(memory.completeTopicProjection(context.jobId, projection(context, 'cluster_dynamic_hash'))).rejects.toThrow(/Unknown/);
     const wrongKind = projection(context);
     wrongKind.topics[0]!.overview[0]!.kind = 'current' as never;
@@ -999,10 +999,10 @@ describe('rebuildable Event-backed topic directory', () => {
     await seed(memory);
     const context = (await memory.claimNextTopicProjection())!;
     await memory.failTopicProjection(context.jobId, new Error('Invalid output contains 私密原文和模型响应'));
-    expect(memory.listTopicProjectionJobs()[0]).toMatchObject({ lastError: 'invalid-output', context: null });
+    expect(memory.listTopicProjectionJobs()[0]).toMatchObject({ lastError: 'worker-failed', context: null });
     expect(JSON.stringify(memory.exportSnapshot().memoryTopicState)).not.toContain('私密原文和模型响应');
     await memory.failTopicProjection(context.jobId, new Error('second failure'));
-    expect(memory.listTopicProjectionJobs()[0]!.lastError).toBe('invalid-output');
+    expect(memory.listTopicProjectionJobs()[0]!.lastError).toBe('worker-failed');
   });
 
   it('uses a hard event-id scope before top-k for topic searches', async () => {
@@ -1138,5 +1138,168 @@ describe('rebuildable Event-backed topic directory', () => {
       await reader?.close(); await memory?.close();
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('Topic failure diagnostics and bounded recovery (#119)', () => {
+  const maxTokens = () => new TopicProjectionError('max-tokens', 'output token limit reached',
+    { finishReason: 'max-tokens', requestedOutputTokens: 32768, maxOutputTokens: 32768 });
+  const start = async (count = 12) => {
+    const memory = StrataGate.inMemory(options);
+    const events = await seed(memory, count);
+    const directory = new MemoryTopicDirectory();
+    const clock = Date.parse('2026-10-07T00:00:00Z');
+    directory.initializeBootstrap(events, new Date(clock).toISOString());
+    return { memory, events, directory, clock };
+  };
+  it('splits explicit max-tokens without changing evidence, reprocessing success or accepting old replies', async () => {
+    const { events, directory, clock } = await start();
+    const now = (delta = 0) => new Date(clock + delta).toISOString();
+    const parent = directory.claim(events, now(), 'bootstrap')!;
+    directory.fail(parent.jobId, maxTokens(), now());
+    expect(directory.jobs().find((job) => job.id === parent.jobId)).toMatchObject({
+      superseded: true, lastError: 'max-tokens',
+      diagnostics: { category: 'max-tokens', eventCount: 12, attempt: 1, splitDepth: 0 } });
+    expect(directory.claim(events, now(29000), 'bootstrap')).toBeNull();
+    const a = directory.claim(events, now(30000), 'bootstrap')!;
+    expect(a.events).toHaveLength(6);
+    expect(a.events).toEqual(parent.events.slice(0, 6));
+    directory.complete(a.jobId, projection(a), events, now(30000));
+    const restored = new MemoryTopicDirectory(); restored.restore(directory.snapshot());
+    const b = restored.claim(events, now(30000), 'bootstrap')!;
+    expect(b.events).toEqual(parent.events.slice(6));
+    restored.complete(b.jobId, projection(b, b.existingTopics[0]!.id), events, now(30000));
+    restored.synchronize(events, now(30000));
+    expect(restored.hasPending(events, clock + 30000)).toBe(false);
+    expect(restored.bootstrap()).toMatchObject({ status: 'completed', failedEvents: 0 });
+    expect(Object.keys(restored.snapshot().projectedVersions)).toHaveLength(12);
+    expect(() => restored.complete(parent.jobId, projection(parent), events, now(30000))).toThrow(/not running/);
+  });
+  it('bounds repeated max-tokens at singleton batches and keeps every exhausted source manually recoverable', async () => {
+    const { events, directory, clock: initial } = await start();
+    let clock = initial, calls = 0;
+    for (;;) {
+      const context = directory.claim(events, new Date(clock).toISOString(), 'bootstrap');
+      if (!context) {
+        if (!directory.jobs().some((job) => !job.superseded && (job.status === 'pending' || job.nextRetryAt !== null))) break;
+        clock += 120000; continue;
+      }
+      expect(context.events.length).toBeGreaterThan(0);
+      directory.fail(context.jobId, maxTokens(), new Date(clock).toISOString());
+      calls += 1; expect(calls).toBeLessThanOrEqual(47); clock += 120000;
+    }
+    directory.synchronize(events, new Date(clock).toISOString());
+    const terminal = directory.jobs().filter((job) => !job.superseded);
+    expect(terminal).toHaveLength(12);
+    expect(new Set(terminal.flatMap((job) => job.sourceEventIds)).size).toBe(12);
+    expect(terminal.every((job) => job.attempts === 3 && job.nextRetryAt === null && (job.splitDepth ?? 0) <= 4)).toBe(true);
+    expect(calls).toBe(47);
+    expect(directory.bootstrap()!.failedEvents).toBe(12);
+    const retry = directory.retry(terminal[0]!.id, events, new Date(clock).toISOString());
+    expect(retry.jobId).not.toBe(terminal[0]!.id);
+    expect(directory.jobs().find((job) => job.id === retry.jobId)).toMatchObject({ attempts: 0, splitDepth: 0 });
+  });
+  it.each(['schema-invalid', 'validation-failed', 'provider-failed', 'timeout', 'worker-failed'] as const)(
+    'keeps %s on the original batch with existing exponential backoff', async (category) => {
+      const { events, directory, clock: initial } = await start();
+      let clock = initial;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const context = directory.claim(events, new Date(clock).toISOString())!;
+        expect(context.events).toHaveLength(12);
+        directory.fail(context.jobId, new TopicProjectionError(category, 'topic worker failed'), new Date(clock).toISOString());
+        const job = directory.jobs().find((job) => job.id === context.jobId)!;
+        expect(job.diagnostics!.category).toBe(category);
+        expect(job.nextRetryAt).toBe(attempt === 3 ? null : new Date(clock + 30000 * 2 ** (attempt - 1)).toISOString());
+        clock += 120000;
+      }
+      expect(directory.hasPending(events, clock)).toBe(false);
+      expect(directory.jobs().filter((job) => !job.superseded)).toHaveLength(1);
+    });
+  it('splits section-backfill work within its existing chapter and preserves the historical success ledger', async () => {
+    const { events, directory, clock } = await start();
+    const now = (delta = 0) => new Date(clock + delta).toISOString();
+    const initial = directory.claim(events, now(), 'bootstrap')!;
+    const [chapterId] = directory.complete(initial.jobId, projection(initial), events, now()).topicIds;
+    const state = directory.snapshot(); const frozen = structuredClone(state.projectedVersions);
+    state.topics[0]!.sections = []; delete state.sectionMembershipVersion;
+    const repair = new MemoryTopicDirectory(); repair.restore(state); repair.initializeBootstrap(events, now());
+    const parent = repair.claim(events, now(), 'bootstrap')!;
+    expect(parent.sectionBackfillTopicId).toBe(chapterId);
+    repair.fail(parent.jobId, maxTokens(), now());
+    for (let part = 0; part < 2; part++) {
+      const child = repair.claim(events, now(30000), 'bootstrap')!;
+      expect(child.sectionBackfillTopicId).toBe(chapterId); expect(child.events).toHaveLength(6);
+      const sourceEventIds = child.events.map((event) => event.id);
+      repair.complete(child.jobId, { topics: [{ topicId: chapterId!, title: 'ignored routing label', description: 'ignored prose',
+        sourceEventIds, overview: [], sections: [{ title: 'repaired section', sourceEventIds }] }] }, events, now(30000));
+    }
+    const after = repair.snapshot();
+    expect(after.projectedVersions).toEqual(frozen); expect(after.sectionBackfill).toEqual({});
+    expect(after.topics).toHaveLength(1); expect(after.topics[0]!.id).toBe(chapterId);
+    expect(after.topics[0]!.title).toBe(state.topics[0]!.title);
+    expect(after.topics[0]!.sourceEventIds).toEqual(state.topics[0]!.sourceEventIds);
+    expect(after.topics[0]!.sections![0]!.sourceEventIds).toEqual(parent.events.map((event) => event.id));
+  });
+  it('keeps split source-version checks after restart and never resurrects a forgotten Event', async () => {
+    const { events, directory, clock } = await start();
+    const context = directory.claim(events, new Date(clock).toISOString())!;
+    directory.fail(context.jobId, maxTokens(), new Date(clock).toISOString());
+    events[0]!.status = 'forgotten'; events[6]!.summary = 'a genuinely new version';
+    const restored = new MemoryTopicDirectory(); restored.restore(directory.snapshot());
+    restored.initializeBootstrap(events, new Date(clock + 120000).toISOString());
+    const fresh = restored.claim(events, new Date(clock + 120000).toISOString())!;
+    expect(fresh.events.map((event) => event.id)).not.toContain(events[0]!.id);
+    expect(fresh.events.find((event) => event.id === events[6]!.id)!.summary).toBe(events[6]!.summary);
+    expect(restored.jobs().filter((job) => job.sourceVersions[events[0]!.id])).toSatisfy((jobs: any[]) => jobs.every((job) => job.superseded));
+    expect(() => restored.complete(context.jobId, projection(context), events, new Date(clock + 120000).toISOString())).toThrow(/not running/);
+  });
+  it('requires an explicit max-tokens finish signal, not an error message or category alone', async () => {
+    const { events, directory, clock } = await start();
+    const context = directory.claim(events, new Date(clock).toISOString())!;
+    directory.fail(context.jobId, new TopicProjectionError('max-tokens', 'output token limit reached'), new Date(clock).toISOString());
+    expect(directory.jobs()).toHaveLength(1);
+    expect(directory.jobs()[0]!.superseded).not.toBe(true);
+  });
+  it('persists safe diagnostics and a fresh manual lifecycle in SQLite without reviving old failures on reopen', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'topic-reliability-'));
+    const database = join(folder, 'memory.sqlite'), namespace = 'topic-reliability';
+    let clock = Date.parse('2026-10-07T00:00:00Z');
+    const open = () => StrataGate.open({ ...options, database, namespace, now: () => new Date(clock) });
+    let memory = await open();
+    try {
+      await seed(memory, 2);
+      let context = (await memory.claimNextTopicProjection())!;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await memory.failTopicProjection(context.jobId, new TopicProjectionError('validation-failed',
+          'every supplied batch Event must be assigned to a topic', { estimatedInputTokens: 100, requestedOutputTokens: 32768 }));
+        clock += 120000;
+        if (attempt < 2) context = (await memory.claimNextTopicProjection())!;
+      }
+      const oldId = context.jobId, before = memory.listTopicProjectionJobs();
+      await memory.close(); memory = await open();
+      expect(memory.listTopicProjectionJobs()).toEqual(before);
+      expect(await memory.claimNextTopicProjection()).toBeNull();
+      expect(JSON.stringify(before)).not.toContain('部署项目');
+      expect(before.at(-1)!.diagnostics).toMatchObject({ category: 'validation-failed',
+        reason: 'every supplied batch Event must be assigned to a topic', estimatedInputTokens: 100, attempt: 3 });
+      const retry = await memory.retryTopicProjection(oldId);
+      await memory.close(); memory = await open();
+      const fresh = (await memory.claimNextTopicProjection())!;
+      expect(fresh.jobId).toBe(retry.jobId);
+      await expect(memory.completeTopicProjection(oldId, projection(fresh))).rejects.toThrow(/not running/);
+      await memory.completeTopicProjection(fresh.jobId, projection(fresh));
+      expect(memory.hasPendingTopicWork()).toBe(false);
+    } finally { await memory.close(); await rm(folder, { recursive: true, force: true }); }
+  });
+  it('keeps the safe core semantic rule for missing Events without persisting source text', async () => {
+    const { memory } = await start(2);
+    const context = (await memory.claimNextTopicProjection())!;
+    const result = projection(context); result.topics[0]!.sourceEventIds = [context.events[0]!.id];
+    result.topics[0]!.overview = [];
+    try { await memory.completeTopicProjection(context.jobId, result); } catch (error) { await memory.failTopicProjection(context.jobId, error); }
+    expect(memory.listTopicProjectionJobs()[0]!.diagnostics).toMatchObject({ category: 'validation-failed',
+      reason: 'every supplied batch Event must be assigned to a topic' });
+    expect(JSON.stringify(memory.listTopicProjectionJobs())).not.toContain('部署项目');
   });
 });

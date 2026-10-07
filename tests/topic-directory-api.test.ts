@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import {
-  MemoryTopicDirectory, MEMORY_TOPIC_PROJECTOR_VERSION, memoryTopicEventFingerprint, StrataGate,
+  MemoryTopicDirectory, TopicProjectionError, MEMORY_TOPIC_PROJECTOR_VERSION, memoryTopicEventFingerprint, StrataGate,
   type EventCard, type MemoryTopicState, type StoredMemoryTopic, type StrataGateSnapshot,
   type TopicProjectionJob,
 } from '@diqier/stratagate'
@@ -315,6 +315,45 @@ describe('read-only Topic Directory admin data', () => {
     expect((await request(runtime, 'topics/retry&jobId=visible-failure&expectedRevision=' + changed.body.revision, 'POST')).status).toBe(409)
     expect(retry).not.toHaveBeenCalled()
   })
+
+  it('routes generic Topic retry to the same queue-only lifecycle without requiring model readiness', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = [event('history')];
+    snapshot.memoryTopicState = freeze(snapshot.events); snapshot.memoryTopicState.jobs = [failedJob('failure', snapshot.events)];
+    const runtime = fakeRuntime(snapshot);
+    const queue = vi.fn(async () => ({ jobId: 'fresh-topic', status: 'pending' as const }));
+    runtime.adminRetryTopicProjection = queue; runtime.adminRetryJob = StrataGateRuntime.prototype.adminRetryJob;
+    const result = await request(runtime, 'jobs/retry&kind=topic-projection&jobId=failure', 'POST');
+    expect(result.status).toBe(200); expect(result.body).toMatchObject({ jobId: 'fresh-topic', status: 'pending' });
+    expect(queue).toHaveBeenCalledExactlyOnceWith(namespace, 'failure');
+    queue.mockRejectedValueOnce(new Error('Topic retry conflict: no longer current'));
+    expect((await request(runtime, 'jobs/retry&kind=topic-projection&jobId=failure', 'POST')).status).toBe(409);
+    expect((await request(runtime, 'jobs/retry&kind=topic-projection&jobId=unknown', 'POST')).status).toBe(404);
+  });
+  it('exposes safe Topic diagnostics in directory and general task APIs, including incremental failures', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = [event('history')]; snapshot.memoryTopicState = freeze(snapshot.events);
+    const diagnostics = new TopicProjectionError('validation-failed', 'every supplied batch Event must be assigned to a topic',
+      { eventCount: 1, candidateTopicCount: 2, requestedOutputTokens: 32768, maxOutputTokens: 32768,
+        estimatedInputTokens: 200, attempt: 3, finishReason: 'stop', reasoningOff: 'unavailable' }).diagnostics;
+    snapshot.memoryTopicState.jobs = [failedJob('failure', snapshot.events, { diagnostics,
+      lastError: 'PRIVATE RAW ERROR', context: { jobId: 'failure', events: snapshot.events, existingTopics: [] } })];
+    const runtime = fakeRuntime(snapshot); const directory = (await request(runtime)).body;
+    expect(directory.bootstrap.failures[0]).toMatchObject({ diagnostics, lastError: 'validation-failed: every supplied batch Event must be assigned to a topic' });
+    snapshot.memoryTopicState.bootstrap!.sourceVersions = {};
+    const overview = (await request(runtime, 'overview')).body.namespaces[0];
+    expect(overview.taskStatus.topicProjection.terminalFailed).toBe(1);
+    expect(overview.failedJobDetails[0]).toMatchObject({ kind: 'topic-projection', diagnostics });
+    expect(JSON.stringify(overview.failedJobDetails)).not.toContain('PRIVATE');
+    expect(overview.failedJobDetails[0]).not.toHaveProperty('context');
+  });
+  it('drops forged diagnostic fields, arbitrary reason strings and raw model data at the API boundary', async () => {
+    const snapshot = emptySnapshot(); snapshot.events = [event('history')]; snapshot.memoryTopicState = freeze(snapshot.events);
+    snapshot.memoryTopicState.jobs = [failedJob('failure', snapshot.events, { diagnostics: {
+      category: 'schema-invalid', reason: 'PRIVATE REASON', rawResponse: 'PRIVATE RESPONSE', reasoning: 'PRIVATE REASONING',
+      finishReason: 'PRIVATE FINISH', eventCount: 1, maxOutputTokens: 32768 } as any })];
+    const result = (await request(fakeRuntime(snapshot))).body;
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    expect(result.bootstrap.failures[0].diagnostics).toEqual({ category: 'schema-invalid', reason: 'topic worker failed', eventCount: 1, maxOutputTokens: 32768 });
+  });
 
   it('converts a source race after the directory check into a refresh conflict', async () => {
     const snapshot = emptySnapshot()
