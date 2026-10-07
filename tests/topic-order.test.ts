@@ -1,6 +1,6 @@
 import { estimateTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
 import { describe, expect, it } from 'vitest'
-import { boundedTopic, MEMORY_DIRECTORY_TOKEN_BUDGET, TOPIC_OVERVIEW_TOKEN_BUDGET, renderMemoryDirectory, sortMemoryTopics, topicNavigation, topicPage } from '../src/topics.js'
+import { boundedTopic, memoryTopicSections, MEMORY_DIRECTORY_TOKEN_BUDGET, TOPIC_OVERVIEW_TOKEN_BUDGET, renderMemoryDirectory, sortMemoryTopics, topicNavigation, topicPage } from '../src/topics.js'
 
 function topic(id: string, createdAt: string, sourceEventIds = [id], isFallback = false): MemoryTopic {
   return { id, title: `主题 ${id}`, description: '', sourceEventIds, overview: [], createdAt,
@@ -16,6 +16,98 @@ function source(id: string, eventType: string): EventCard {
 }
 
 describe('shared memory directory order', () => {
+  it('injects chapter titles, descriptions and stable section titles without overview prose', () => {
+    const chapter = topic('stratagate', '2026-10-01', ['E1', 'E2', 'E3'])
+    chapter.title = 'StrataGate'
+    chapter.description = '记忆系统设计、开发排障与版本发布'
+    chapter.sections = [
+      { title: '版本发布与安装', sourceEventIds: ['E3'] },
+      { title: '竞品分析与实验评测', sourceEventIds: ['E1'] },
+      { title: '缺陷排查与修复', sourceEventIds: ['E2'] },
+    ]
+    chapter.overview = [{ kind: 'history', title: '缺陷排查与修复', text: '临时修复细节'.repeat(1_000), sourceEventIds: ['E2'] }]
+    const events = [source('E1', 'release'), source('E2', 'release'), source('E3', 'release')]
+    const before = JSON.stringify({ chapter, events })
+    const context = renderMemoryDirectory([chapter], events)
+    expect(context).toContain('- stratagate：StrataGate；记忆系统设计、开发排障与版本发布')
+    expect(context.split('\n').filter((line) => line.startsWith('  - '))).toEqual([
+      '  - 竞品分析与实验评测', '  - 缺陷排查与修复', '  - 版本发布与安装',
+    ])
+    expect(context).not.toContain('临时修复细节')
+    expect(context).not.toContain('.0')
+    expect(context).toContain('不是事实证据')
+    expect(context).toContain('memory_search_events(topic_id)')
+    expect(estimateTokens(context)).toBeLessThanOrEqual(MEMORY_DIRECTORY_TOKEN_BUDGET)
+    expect(JSON.stringify({ chapter, events })).toBe(before)
+  })
+
+  it('groups sections under their chapters in creation order', () => {
+    const first = topic('project', '2026-10-01', ['E1'])
+    first.title = 'StrataGate'; first.description = '项目记录'
+    first.sections = [{ title: '架构与配置决策', sourceEventIds: ['E1'] }]
+    const second = topic('career', '2026-10-02', ['E2'])
+    second.title = '求职与职业发展'; second.description = '职业状态档案'
+    second.sections = [{ title: '投递与面试', sourceEventIds: ['E2'] }]
+    expect(renderMemoryDirectory([second, first], []).split('\n').slice(2)).toEqual([
+      '- project：StrataGate；项目记录', '  - 架构与配置决策',
+      '- career：求职与职业发展；职业状态档案', '  - 投递与面试',
+    ])
+  })
+
+  it('renders legacy chapters with absent or empty sections and recovers known legacy labels', () => {
+    const legacy = topic('legacy', '2026-10-01')
+    legacy.description = '旧章描述'
+    const empty = topic('empty', '2026-10-02'); empty.sections = []
+    const context = renderMemoryDirectory([legacy, empty], [])
+    expect(context).toContain('- legacy：主题 legacy；旧章描述')
+    expect(context).toContain('- empty：主题 empty')
+    expect(context).not.toContain('  - ')
+    expect(context).not.toMatch(/undefined|null|\n\s*$/u)
+    legacy.overview = [{ kind: 'scope', title: '研究方向', text: '旧总览正文', sourceEventIds: legacy.sourceEventIds }]
+    expect(renderMemoryDirectory([legacy], [])).toContain('  - 研究方向')
+    expect(renderMemoryDirectory([legacy], [])).not.toContain('旧总览正文')
+    expect(renderMemoryDirectory([], [])).toBe('')
+  })
+
+  it('reserves chapter descriptions and navigation before sharing the remaining section budget', () => {
+    const chapters = ['first', 'second'].map((id, index) => {
+      const chapter = topic(id, `2026-10-0${index + 1}`, Array.from({ length: 200 }, (_, i) => `${id}-${i}`))
+      chapter.description = `第${index + 1}章范围`
+      chapter.sections = chapter.sourceEventIds.map((eventId, i) => ({ title: `${id} 类别 ${i}`, sourceEventIds: [eventId] }))
+      return chapter
+    })
+    const before = JSON.stringify(chapters)
+    const context = renderMemoryDirectory(chapters, [])
+    expect(estimateTokens(context)).toBeLessThanOrEqual(MEMORY_DIRECTORY_TOKEN_BUDGET)
+    expect(context).toContain('目录已裁剪')
+    expect(context).toContain('memory_list_topics(category, offset)')
+    expect(context).toContain('memory_expand_topic(id)')
+    for (const chapter of chapters) {
+      expect(context).toContain(`- ${chapter.id}：${chapter.title}；${chapter.description}`)
+      expect(context).toContain(`  - ${chapter.id} 类别 0`)
+      const titles = context.split('\n').filter((line) => line.startsWith(`  - ${chapter.id} 类别`))
+      expect(titles).toEqual(memoryTopicSections(chapter).slice(0, titles.length).map(({ title }) => `  - ${title}`))
+      expect(titles.length).toBeLessThan(200)
+    }
+    expect(JSON.stringify(chapters)).toBe(before)
+  })
+
+  it('keeps every category reachable within budget even when chapter ids cannot fit', () => {
+    const types = ['release', 'decision', 'meeting', 'note', 'note']
+    const chapters = types.map((_, index) => {
+      const chapter = topic(`topic-${index}-${'x'.repeat(2_000)}`, `2026-10-0${index + 1}`)
+      chapter.title = '长标题'.repeat(100); chapter.description = '长描述'.repeat(100)
+      chapter.sections = [{ title: '长节标题'.repeat(100), sourceEventIds: chapter.sourceEventIds }]
+      return chapter
+    })
+    const events = chapters.map((chapter, index) => source(chapter.id, types[index]!))
+    events[4]!.criticality = 'preference'
+    const context = renderMemoryDirectory(chapters, events)
+    expect(estimateTokens(context)).toBeLessThanOrEqual(MEMORY_DIRECTORY_TOKEN_BUDGET)
+    expect(context).toContain('memory_list_topics(category, offset)')
+    for (const { id } of topicNavigation(chapters, events).categories) expect(context).toContain(`${id}（`)
+  })
+
   it('keeps the full independent membership index outside the bounded model expansion', () => {
     const chapter = topic('large', '2026-10-01T00:00:00.000Z', Array.from({ length: 10_000 }, (_, index) => `member-${index}`));
     chapter.sections = [{ title: '研究方向', sourceEventIds: [...chapter.sourceEventIds] }];

@@ -324,6 +324,71 @@ describe('memory topic runtime boundaries', () => {
     }
   })
 
+  it('reads section navigation on cold and active paths without model calls, database writes or adoption', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-directory-readonly-'))
+    const database = join(directory, 'memory.db')
+    const session = makeSession('directory-readonly')
+    const { models, topicCalls } = makeModels()
+    const modelSpies = [vi.spyOn(models, 'summarizer'), vi.spyOn(models, 'extractor'), vi.spyOn(models, 'graphProjector')]
+    const runtime = new StrataGateRuntime(makeConfig(database), models)
+    manualWorker(runtime)
+    const save = vi.spyOn(SqliteStorage.prototype, 'save')
+    let reader: DatabaseSync | undefined
+    try {
+      const namespace = runtime.namespaceFor(session)
+      await seed(database, namespace, deploymentEvents.slice(0, 2), false)
+      const writer = await StrataGate.open({ database, namespace })
+      try {
+        const context = (await writer.claimNextTopicProjection())!
+        const sources = context.events.map(({ id }) => id)
+        await writer.completeTopicProjection(context.jobId, { topics: [{
+          title: 'StrataGate', description: '系统开发与发布事项', sourceEventIds: sources,
+          sections: [{ title: '缺陷排查与修复', sourceEventIds: [sources[0]!] },
+            { title: '版本发布与安装', sourceEventIds: [sources[1]!] }],
+          overview: [{ kind: 'history', title: '缺陷排查与修复', text: '临时排查正文不应注入', sourceEventIds: [sources[0]!] }],
+        }] })
+      } finally { await writer.close() }
+      reader = new DatabaseSync(database, { readOnly: true })
+      const version = () => reader!.prepare('PRAGMA data_version').get()
+      for (const active of [false, true]) {
+        if (active) await runtime.listTopics(session)
+        const before = await runtime.adminSnapshot(namespace)
+        const previousVersion = version()
+        save.mockClear()
+        const rendered = await runtime.buildMemoryDirectory(session)
+        expect(rendered).toContain('StrataGate；系统开发与发布事项')
+        expect(rendered).toContain('  - 缺陷排查与修复')
+        expect(rendered).toContain('  - 版本发布与安装')
+        expect(rendered).not.toContain('临时排查正文不应注入')
+        expect(await runtime.buildMemoryDirectory(session)).toBe(rendered)
+        expect(version()).toEqual(previousVersion)
+        expect(save).not.toHaveBeenCalled()
+        expect(await runtime.adminSnapshot(namespace)).toEqual(before)
+        expect(adoption(await runtime.adminSnapshot(namespace))).toEqual(adoption(before))
+        expect(topicCalls).not.toHaveBeenCalled()
+        for (const spy of modelSpies) expect(spy).not.toHaveBeenCalled()
+      }
+      const before = version()
+      expect(await runtime.buildMemoryDirectory(makeSession('unknown-directory'))).toBe('')
+      expect(version()).toEqual(before)
+      // A pre-topic namespace stays pre-topic: reading must not persist bootstrap/migration state.
+      removeLegacyTopicState(database, namespace)
+      const legacyVersion = version()
+      const legacyRuntime = new StrataGateRuntime(makeConfig(database), models)
+      manualWorker(legacyRuntime)
+      try { expect(await legacyRuntime.buildMemoryDirectory(session)).toContain('pnpm') }
+      finally { await legacyRuntime.close() }
+      expect(version()).toEqual(legacyVersion)
+      expect(reader.prepare('SELECT namespace FROM memory_topic_state WHERE namespace = ?').get(namespace)).toBeUndefined()
+    } finally {
+      save.mockRestore()
+      for (const spy of modelSpies) spy.mockRestore()
+      reader?.close()
+      await runtime.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('limits topic retrieval to its Event sources and retains the existing assessment/adoption gate', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-topic-evidence-'))
     const database = join(directory, 'memory.db')

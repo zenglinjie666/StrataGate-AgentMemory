@@ -150,22 +150,57 @@ function lineText(value: string, maximum: number): string {
 export function renderMemoryDirectory(topics: readonly MemoryTopic[], events: readonly EventCard[]): string {
   const { entries, categories } = topicNavigation(topics, events)
   if (entries.length === 0) return ''
-  const header = '[StrataGate 记忆目录]\n仅供导航，概览不是事实证据。需要主题脉络时用 memory_expand_topic；需要事实证据可直接 memory_search_events(topic_id)，也可直接搜索事件/图谱。'
-  const lines = entries.map((entry) => `- ${entry.id}：${lineText(entry.title, 64)}${entry.description ? `；${lineText(entry.description, 48)}` : ''}`)
-  const complete = `${header}\n${lines.join('\n')}`
+  const header = '[StrataGate 记忆目录]\n仅供导航，不是事实证据。需要主题脉络时用 memory_expand_topic；需要事实证据可直接 memory_search_events(topic_id)，也可直接搜索事件/图谱。'
+  const byId = new Map(topics.map((topic) => [topic.id, topic]))
+  const chapters = entries.map((entry) => ({
+    ...entry,
+    line: `- ${entry.id}：${lineText(entry.title, 64)}${entry.description ? `；${lineText(entry.description, 48)}` : ''}`,
+    // Reuse the book's stable section order, including summary-free and legacy sections.
+    sections: memoryTopicSections(byId.get(entry.id)!).map(({ title }) => `  - ${lineText(title, 64)}`),
+  }))
+  const render = (prefix: string, selected: Array<{ line: string; sections: string[] }>) =>
+    `${prefix}\n${selected.flatMap(({ line, sections }) => [line, ...sections]).join('\n')}`.trim()
+  const complete = render(header, chapters)
   if (estimateTokens(complete) <= MEMORY_DIRECTORY_TOKEN_BUDGET) return complete
-  // Every branch remains reachable even when a large catalog cannot fit the prompt.
+
+  // Reserve the route to omitted chapters/sections before admitting any content.
   const branches = categories.map(({ id, label, count }) => `${id}（${label} ${count}）`).join('；')
-  const navigation = `${header}\n共 ${entries.length} 项；分类：${branches}。完整目录用 memory_list_topics(category, offset) 分页；query 可查主题。下列为部分入口：`
-  const selected: Array<{ id: string; line: string }> = []
-  for (const category of categories) {
-    const entry = entries.find((item) => item.category === category.id)!
-    const line = `- ${entry.id}：${lineText(entry.title, 40)}`
-    if (estimateTokens(`${navigation}\n${[...selected.map(({ line }) => line), line].join('\n')}`) <= MEMORY_DIRECTORY_TOKEN_BUDGET) selected.push({ id: entry.id, line })
+  const navigation = `${header}\n共 ${entries.length} 项；分类：${branches}。目录已裁剪；完整目录用 memory_list_topics(category, offset) 分页；query 可查主题，小节用 memory_expand_topic(id)。`
+  let selected = chapters.map((chapter) => ({ ...chapter, sections: [] as string[] }))
+  if (estimateTokens(render(navigation, selected)) > MEMORY_DIRECTORY_TOKEN_BUDGET) {
+    selected = []
+    const admit = (chapter: typeof chapters[number]) => {
+      for (const line of [chapter.line, `- ${chapter.id}：${lineText(chapter.title, 64)}`]) {
+        const candidate = { ...chapter, line, sections: [] as string[] }
+        if (estimateTokens(render(navigation, [...selected, candidate])) <= MEMORY_DIRECTORY_TOKEN_BUDGET) {
+          selected.push(candidate)
+          return
+        }
+      }
+    }
+    // Keep category representatives reachable before filling other chapter entries.
+    for (const category of categories) admit(chapters.find((chapter) => chapter.category === category.id)!)
+    for (const chapter of chapters) if (!selected.some(({ id }) => id === chapter.id)) admit(chapter)
   }
   const order = new Map(entries.map(({ id }, index) => [id, index]))
   selected.sort((a, b) => order.get(a.id)! - order.get(b.id)!)
-  return `${navigation}\n${selected.map(({ line }) => line).join('\n')}`.trim()
+  // Chapter titles/descriptions come first. Share remaining space across chapters,
+  // admitting section titles in order without letting one large chapter consume it all.
+  const sectionLines = new Map(chapters.map(({ id, sections }) => [id, sections]))
+  const exhausted = new Set<string>()
+  for (let index = 0; exhausted.size < selected.length; index++) {
+    for (const chapter of selected) {
+      if (exhausted.has(chapter.id)) continue
+      const line = sectionLines.get(chapter.id)![index]
+      if (line === undefined) { exhausted.add(chapter.id); continue }
+      chapter.sections.push(line)
+      if (estimateTokens(render(navigation, selected)) > MEMORY_DIRECTORY_TOKEN_BUDGET) {
+        chapter.sections.pop()
+        exhausted.add(chapter.id)
+      }
+    }
+  }
+  return render(navigation, selected)
 }
 
 export function boundedTopic(topic: MemoryTopic, envelope: Record<string, unknown> = {}) {
