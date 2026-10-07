@@ -1,17 +1,22 @@
 import { createHash } from 'node:crypto'
-import { bm25Rank, estimateTokens, memoryTopicSectionTitle, weightedSearchTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
+import { bm25Rank, estimateTokens, memoryTopicMembershipSections, memoryTopicSectionTitle, weightedSearchTokens, type EventCard, type MemoryTopic } from '@diqier/stratagate'
 
 export function memoryTopicSectionKey(title: string): string {
   const identity = title.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase()
   return 'section:' + createHash('sha256').update(identity).digest('hex')
 }
 
-/** Read-only organization: paragraphs keep their own evidence; a section owns
- * the chapter-member-ordered union of their sources, not rewritten prose. */
-export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
+/** Paragraph evidence and directory membership are independent. */
+export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds' | 'sections'>) {
   const memberPositions = new Map<string, number>()
   topic.sourceEventIds.forEach((id, index) => { if (!memberPositions.has(id)) memberPositions.set(id, index) })
   const sections = new Map<string, { key: string; title: string; paragraphs: MemoryTopic['overview']; sourceEventIds: string[] }>()
+  for (const membership of memoryTopicMembershipSections(topic)) {
+    const key = memoryTopicSectionKey(membership.title)
+    const section = sections.get(key) ?? { key, title: membership.title, paragraphs: [], sourceEventIds: [] }
+    section.sourceEventIds.push(...membership.sourceEventIds.filter((id) => memberPositions.has(id)))
+    sections.set(key, section)
+  }
   for (const part of topic.overview) {
     const title = memoryTopicSectionTitle(part)
     const identity = memoryTopicSectionKey(title)
@@ -21,7 +26,6 @@ export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourc
       sections.set(identity, section)
     }
     section.paragraphs.push(part)
-    for (const id of part.sourceEventIds) if (memberPositions.has(id)) section.sourceEventIds.push(id)
   }
   // Membership preserves older members before appended Events. Proposal prose
   // can precede inherited prose, so its array order must not renumber the book.
@@ -42,7 +46,7 @@ export function memoryTopicSections(topic: Pick<MemoryTopic, 'overview' | 'sourc
     .map(({ section }) => section)
 }
 
-export function memoryTopicSectionNavigation(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds'>) {
+export function memoryTopicSectionNavigation(topic: Pick<MemoryTopic, 'overview' | 'sourceEventIds' | 'sections'>) {
   return memoryTopicSections(topic).map(({ sourceEventIds, paragraphs, ...section }) => ({
     ...section,
     sourceEventCount: sourceEventIds.length,
@@ -165,14 +169,28 @@ export function renderMemoryDirectory(topics: readonly MemoryTopic[], events: re
 }
 
 export function boundedTopic(topic: MemoryTopic, envelope: Record<string, unknown> = {}) {
+  // Keep lightweight section navigation, including summary-free sections.
+  // Full membership relations remain behind server-side Event pagination.
+  const { sections: _sections, ...summaryTopic } = topic
+  const sectionIndex = memoryTopicSections(topic).map(({ title, sourceEventIds }) => ({ title, sourceEventCount: sourceEventIds.length }))
+  const sections: typeof sectionIndex = []
   const overview: MemoryTopic['overview'] = []
   const sourceEventIds = topic.sourceEventIds.slice(0, 12)
-  const result = (parts: MemoryTopic['overview']) => ({
-    ...topic, sourceEventIds, overview: parts,
+  const result = (parts: MemoryTopic['overview'], selectedSections = sections) => ({
+    ...summaryTopic, sourceEventIds, overview: parts,
+    sections: selectedSections,
+    totalSections: sectionIndex.length,
+    omittedSections: sectionIndex.length - selectedSections.length,
     totalSourceEvents: topic.sourceEventIds.length,
     omittedSourceEvents: topic.sourceEventIds.length - sourceEventIds.length,
     omittedOverviewParagraphs: topic.overview.length - parts.length,
   })
+  // The index is the route into Events even when no prose was generated.
+  // Admit it first, with counts and the response envelope inside the budget.
+  for (const section of sectionIndex) {
+    if (estimateTokens(JSON.stringify({ ...envelope, topic: result(overview, [...sections, section]) })) > TOPIC_OVERVIEW_TOKEN_BUDGET) break
+    sections.push(section)
+  }
   for (const paragraph of topic.overview) {
     if (estimateTokens(JSON.stringify({ ...envelope, topic: result([...overview, paragraph]) })) <= TOPIC_OVERVIEW_TOKEN_BUDGET) overview.push(paragraph)
   }
