@@ -15,6 +15,7 @@ import {
   memoryTopicEventFingerprint,
   memoryWeightAt,
   TOPIC_MAX_ATTEMPTS,
+  safeTopicDiagnostics,
   type ElementCard,
   type EventCard,
   type ExternalMemoryAction,
@@ -528,6 +529,7 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
       || job.status !== 'failed' || job.attempts < TOPIC_MAX_ATTEMPTS
       || !Object.entries({ ...job.sourceVersions, ...job.dependencyVersions })
         .every(([id, version]) => versions.get(id) === version)) return []
+    const diagnostics = safeTopicDiagnostics(job.diagnostics)
     const ids = job.sourceEventIds.filter((id) => {
       const key = relationKey(job.sectionBackfillTopicId, id, job.sourceVersions[id]!)
       if (!outstandingWork.has(key)) return false
@@ -536,7 +538,10 @@ function topicDirectoryProjection(snapshot: StrataGateSnapshot, agentMemoryWeigh
     return ids.length > 0 ? [{
       jobId: job.id, eventIds: ids, attempts: job.attempts,
       // Topic failures store reason codes, never raw model output.
-      lastError: ['timeout', 'source-changed', 'invalid-output', 'worker-failed'].includes(job.lastError ?? '')
+      diagnostics,
+      lastError: diagnostics
+        ? `${diagnostics.category}: ${diagnostics.reason}`
+        : ['timeout', 'source-changed', 'invalid-output', 'worker-failed'].includes(job.lastError ?? '')
         ? job.lastError : 'worker-failed',
       updatedAt: job.updatedAt,
     }] : []
@@ -765,12 +770,25 @@ async function overview(runtime: StrataGateRuntime, cachedEntries?: readonly Adm
         sourceEventIds: job.sourceEventIds,
       }
     }
+    const topicJobs = (snapshot.memoryTopicState?.jobs ?? []).filter((job) => !job.superseded)
+    const describeTopicJob = (job: (typeof topicJobs)[number]) => {
+      const diagnostics = safeTopicDiagnostics(job.diagnostics)
+      const lastError = diagnostics ? `${diagnostics.category}: ${diagnostics.reason}`
+        : ['timeout', 'source-changed', 'invalid-output', 'worker-failed'].includes(job.lastError ?? '') ? job.lastError : 'worker-failed'
+      return { id: job.id, kind: 'topic-projection' as const,
+        state: derivationJobState(job, job.status === 'completed'), status: job.status,
+        attempts: job.attempts, nextRetryAt: job.nextRetryAt, updatedAt: job.updatedAt,
+        lastError, lastErrorFull: lastError, diagnostics, eventCount: job.sourceEventIds.length,
+        blockIds: [], threadIds: [], blockDetails: [] }
+    }
+    const topicStatus = summarizeDerivationJobs(topicJobs, (job) => job.status === 'completed')
     const summaryStatus = summarizeDerivationJobs(snapshot.summaryJobs, (job) => job.status === 'succeeded')
     const extractionStatus = summarizeDerivationJobs(snapshot.extractionJobs, (job) => job.status === 'succeeded' || job.status === 'skipped')
     const graphStatus = summarizeDerivationJobs(snapshot.graphProjectionJobs, (job) => job.status === 'completed')
-    const failedJobs = summaryStatus.terminalFailed + extractionStatus.terminalFailed + graphStatus.terminalFailed
-    const processingJobs = summaryStatus.processing + extractionStatus.processing + graphStatus.processing
+    const failedJobs = summaryStatus.terminalFailed + extractionStatus.terminalFailed + graphStatus.terminalFailed + topicStatus.terminalFailed
+    const processingJobs = summaryStatus.processing + extractionStatus.processing + graphStatus.processing + topicStatus.processing
     const failedJobDetails = [
+      ...topicJobs.filter((job) => job.status === 'failed').map(describeTopicJob),
       ...snapshot.summaryJobs
         .filter(({ status }) => status === 'failed')
         .map((job) => describeBlockJob('block-summary', job)),
@@ -782,6 +800,7 @@ async function overview(runtime: StrataGateRuntime, cachedEntries?: readonly Adm
         .map(describeGraphJob),
     ]
     const processingJobDetails = [
+      ...topicJobs.filter((job) => ['processing', 'retryable'].includes(derivationJobState(job, job.status === 'completed'))).map(describeTopicJob),
       ...snapshot.summaryJobs
         .filter((job) => derivationJobState(job, job.status === 'succeeded') === 'processing'
           || derivationJobState(job, job.status === 'succeeded') === 'retryable')
@@ -820,6 +839,7 @@ async function overview(runtime: StrataGateRuntime, cachedEntries?: readonly Adm
         blockSummary: summaryStatus,
         eventExtraction: extractionStatus,
         graphProjection: graphStatus,
+        topicProjection: topicStatus,
       },
       graphMigration: (() => {
         const projected = new Set(snapshot.graphProjectionJobs
@@ -1543,8 +1563,8 @@ async function retryJob(runtime: StrataGateRuntime, url: URL): Promise<unknown> 
   const kind = url.searchParams.get('kind')?.trim() ?? ''
   const jobId = url.searchParams.get('jobId')?.trim() ?? ''
   if (!namespace) throw new AdminHttpError(400, 'namespace is required')
-  if (!['block-summary', 'event-extraction', 'graph-projection'].includes(kind)) {
-    throw new AdminHttpError(400, 'kind must be block-summary, event-extraction, or graph-projection')
+  if (!['block-summary', 'event-extraction', 'graph-projection', 'topic-projection'].includes(kind)) {
+    throw new AdminHttpError(400, 'kind must be block-summary, event-extraction, graph-projection, or topic-projection')
   }
   if (!jobId) throw new AdminHttpError(400, 'jobId is required')
   if (jobId.startsWith('virtual:')) throw new AdminHttpError(409, 'Recovered legacy fragments cannot be retried')
@@ -1553,16 +1573,18 @@ async function retryJob(runtime: StrataGateRuntime, url: URL): Promise<unknown> 
     ? snapshot.summaryJobs.find(({ blockId }) => blockId === jobId)
     : kind === 'event-extraction'
       ? snapshot.extractionJobs.find(({ blockId }) => blockId === jobId)
-      : snapshot.graphProjectionJobs.find(({ id }) => id === jobId)
+      : kind === 'topic-projection' ? snapshot.memoryTopicState?.jobs.find(({ id }) => id === jobId)
+        : snapshot.graphProjectionJobs.find(({ id }) => id === jobId)
   if (!job) throw new AdminHttpError(404, `Unknown ${kind} job: ${jobId}`)
   if (job.status !== 'failed') throw new AdminHttpError(409, `${kind} job is ${job.status}, not failed`)
   try {
     return await runtime.adminRetryJob(
       namespace,
-      kind as 'block-summary' | 'event-extraction' | 'graph-projection',
+      kind as 'block-summary' | 'event-extraction' | 'graph-projection' | 'topic-projection',
       jobId,
     )
   } catch (error) {
+    if (kind === 'topic-projection' && error instanceof Error && /Topic retry conflict|Unknown topic projection/.test(error.message)) throw new AdminHttpError(409, '来源或任务已更新，请重新读取目录')
     throw new AdminHttpError(422, error instanceof Error ? error.message : String(error))
   }
 }

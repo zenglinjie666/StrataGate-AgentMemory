@@ -2287,7 +2287,7 @@ window.__ModuleLoader__.load({
         h(DirectoryFold, { open: detailsOpen, id: 'sg-topic-bootstrap-details' }, h('div', { className: 'sg-topic-failures' },
           (bootstrap.failures || []).map((failure, index) => h('div', { key: failure.jobId, className: 'sg-topic-failure' }, h('p', null, '自动整理已停止' + (failure.attempts ? ' · 已尝试 ' + failure.attempts + ' 次' : '')),
             index > 0 ? h(TopicRetryButton, { failure, namespace, revision, onDirectoryChanged }) : null,
-            h(TopicEventList, { namespace, revision, topicId: 'pending', sectionKey: 'failure:' + failure.jobId, total: Number(failure.eventCount || 0), active: active && detailsOpen, openEvent, onDirectoryChanged }), failure.lastError ? h('details', { className: 'sg-topic-failure-technical' }, h('summary', null, '技术详情'), h('p', null, failure.lastError)) : null)),
+            h(TopicEventList, { namespace, revision, topicId: 'pending', sectionKey: 'failure:' + failure.jobId, total: Number(failure.eventCount || 0), active: active && detailsOpen, openEvent, onDirectoryChanged }), failure.lastError ? h('details', { className: 'sg-topic-failure-technical' }, h('summary', null, '技术详情'), h('p', null, failure.lastError), failure.diagnostics ? h('pre', { className: 'sg-code' }, JSON.stringify(failure.diagnostics, null, 2)) : null) : null)),
           !(bootstrap.failures || []).length ? h('p', null, '部分历史记忆暂未形成主题，请从下方待整理事件或事件时间线查看。') : null)))
     }
 
@@ -2696,7 +2696,7 @@ window.__ModuleLoader__.load({
           if (!found) addLegacyJob(block, 'event-extraction', 'running')
         }
       }
-      const taskLabel = (kind) => kind === 'block-summary' ? '短期记忆压缩' : kind === 'event-extraction' ? '长期记忆提取' : '知识图谱更新'
+      const taskLabel = (kind) => kind === 'block-summary' ? '短期记忆压缩' : kind === 'event-extraction' ? '长期记忆提取' : kind === 'topic-projection' ? '主题整理' : '知识图谱更新'
       const retryKey = statusJobKey
       const technicalStatusText = (status, job) => job?.state === 'terminal-failed'
         ? '终态失败'
@@ -2707,7 +2707,7 @@ window.__ModuleLoader__.load({
       for (const job of jobsByKey.values()) {
         let details = Array.isArray(job.blockDetails) ? job.blockDetails : []
         if (!details.length) {
-          const ids = Array.isArray(job.blockIds) && job.blockIds.length ? job.blockIds : job.id && job.kind !== 'graph-projection' ? [job.id] : []
+          const ids = Array.isArray(job.blockIds) && job.blockIds.length ? job.blockIds : job.id && !['graph-projection', 'topic-projection'].includes(job.kind) ? [job.id] : []
           details = ids.map((id) => blockById.get(id)).filter(Boolean).map((block) => ({
             id: block.id, sourceId: block.id, sequence: block.sequence, title: block.title || block.l0Title,
             threadId: block.threadId, turnRange: block.turnRange, shouldExtract: block.shouldExtract,
@@ -2736,6 +2736,7 @@ window.__ModuleLoader__.load({
         const summaryJob = item.jobs.find((job) => job.kind === 'block-summary')
         const extractionJobs = item.jobs.filter((job) => job.kind === 'event-extraction')
         const graphJobs = item.jobs.filter((job) => job.kind === 'graph-projection')
+        const topicJobs = item.jobs.filter((job) => job.kind === 'topic-projection')
         const summaryFailed = summaryJob && terminalFailedKeys.has(statusJobKey(summaryJob))
         const extractionFailed = extractionJobs.some((job) => terminalFailedKeys.has(statusJobKey(job)))
         const graphFailed = graphJobs.some((job) => terminalFailedKeys.has(statusJobKey(job)))
@@ -2755,6 +2756,8 @@ window.__ModuleLoader__.load({
           if (jobs.length) return { kind: 'waiting', mark: '○', label: '排队中' }
           return { kind: 'waiting', mark: '○', label: emptyLabel }
         }
+        if (topicJobs.length === item.jobs.length) return [['主题整理', stageForJobs(topicJobs,
+          topicJobs.some((job) => terminalFailedKeys.has(statusJobKey(job))), '等待整理')]]
         const extractionStage = extractionFailed
           ? stageForJobs(extractionJobs, true, '等待提取')
           : extractionJobs.length
@@ -2810,7 +2813,7 @@ window.__ModuleLoader__.load({
         setFeedback({ kind: '', text: taskLabel(job.kind) + ' 正在处理…' })
         return api('jobs/retry', { namespace, kind: job.kind, jobId: job.id }, { method: 'POST' })
           .then(() => refresh({ propagateError: true }))
-          .then(() => setFeedback({ kind: 'done', text: '任务已完成，状态已更新' }))
+          .then(() => setFeedback({ kind: 'done', text: job.kind === 'topic-projection' ? '已重新排队，按历史额度继续整理' : '任务已完成，状态已更新' }))
           .catch(async (reason) => {
             const message = String(reason?.message || reason)
             setRetryErrors((current) => ({ ...current, [key]: message }))
@@ -2862,6 +2865,7 @@ window.__ModuleLoader__.load({
                   job.nextRetryAt ? h('div', { className: 'sg-process-job-meta' }, '计划重试：' + formatTime(job.nextRetryAt)) : null,
                   failed && !job.nextRetryAt ? h('div', { className: 'sg-process-job-meta' }, '自动重试已停止') : null,
                   failed ? h('pre', { className: 'sg-job-error sg-code' }, job.lastErrorFull || job.lastError || '没有记录技术错误。') : null,
+                  job.kind === 'topic-projection' && job.diagnostics ? h('pre', { className: 'sg-code' }, JSON.stringify(job.diagnostics, null, 2)) : null,
                   failed ? h('div', { className: 'sg-process-job-actions' }, h('span', { className: 'sg-status-feedback failed', role: retryErrors[key] ? 'alert' : undefined }, retryErrors[key] || ''), h('button', { type: 'button', className: 'sg-save-button', disabled: busy, onClick: () => void retryJob(job) }, busy ? '正在处理…' : '重试此任务')) : null)
               })) : null
             )
@@ -3282,6 +3286,7 @@ window.__ModuleLoader__.load({
           attempts: job?.attempts,
           lastError: job?.lastErrorFull || job?.lastError,
           updatedAt: job?.updatedAt,
+          ...(job?.kind === 'topic-projection' ? { diagnostics: job?.diagnostics } : {}),
         })) : []
         lines.push('', '## 诊断日志', '', '```json', redactedJson({ frontendError: recentError || null, failedJobs }), '```')
       }

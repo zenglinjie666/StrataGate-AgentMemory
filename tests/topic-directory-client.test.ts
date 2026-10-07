@@ -839,7 +839,7 @@ describe('Topic Directory client interactions', () => {
     expect(find(client.render(client.TopicDirectory, props), (node) => String(node.props.className || '').startsWith('sg-topic-bootstrap '))).toHaveLength(0)
     props.directory.bootstrap = { ...props.directory.bootstrap, total: 0, completed: 0, status: 'pending' }
     expect(find(client.render(client.TopicDirectory, props), (node) => String(node.props.className || '').startsWith('sg-topic-bootstrap '))).toHaveLength(0)
-    props.directory.bootstrap = { status: 'completed', total: 61, completed: 58, failedEvents: 3, failures: [{ jobId: 'failed-1', eventIds: ['event-22'], attempts: 3, lastError: '结构校验失败' }] } as any
+    props.directory.bootstrap = { status: 'completed', total: 61, completed: 58, failedEvents: 3, failures: [{ jobId: 'failed-1', eventIds: ['event-22'], attempts: 3, lastError: 'validation-failed: every supplied batch Event must be assigned to a topic', diagnostics: { category: 'validation-failed', reason: 'every supplied batch Event must be assigned to a topic', eventCount: 3, requestedOutputTokens: 32768, maxOutputTokens: 32768, attempt: 3 } }] } as any
     let tree = client.render(client.TopicDirectory, props)
     expect(tree.text).toContain('3 条历史记忆暂未完成整理')
     buttons(tree, '查看详情')[0]!.props.onClick()
@@ -848,6 +848,10 @@ describe('Topic Directory client interactions', () => {
     tree = client.render(client.TopicDirectory, props)
     expect(find(tree, (node) => node.visible && node.props.className === 'sg-topic-failure')).toHaveLength(1)
     expect(buttons(tree, '收起详情')).toHaveLength(1)
+    const diagnostics = find(tree, (node) => node.type === 'pre').map((node) => node.text).join('')
+    expect(diagnostics).toContain('maxOutputTokens')
+    expect(diagnostics).toContain('32768')
+    expect(diagnostics).not.toContain('Raw response')
     const failureEvent = buttons(tree).find((node) => node.props['data-topic-event-id'] === 'event-22')!
     failureEvent.props.onClick({ currentTarget: {} })
     expect(props.openEvent).toHaveBeenCalledWith(eventFixture()[21]!, {})

@@ -30,8 +30,9 @@ import type {
   TopicProjectionContext,
   TopicProjectionResult,
   TopicProjector,
+  TopicProjectionDiagnostics,
 } from '@diqier/stratagate'
-import { buildMemoryDerivationMessages, estimateTokens, EVENT_EXTRACTOR_VERSION, EXTERNAL_MEMORY_DECIDER_PROMPT_ZH_CN, memoryTopicMembershipSections, memoryTopicOverviewMatchesSection, nowUtc8, normalizeEventMetadata, normalizeEventTemporal, parseExternalMemoryExport } from '@diqier/stratagate'
+import { TopicProjectionError, buildMemoryDerivationMessages, estimateTokens, EVENT_EXTRACTOR_VERSION, EXTERNAL_MEMORY_DECIDER_PROMPT_ZH_CN, memoryTopicMembershipSections, memoryTopicOverviewMatchesSection, nowUtc8, normalizeEventMetadata, normalizeEventTemporal, parseExternalMemoryExport } from '@diqier/stratagate'
 import { PROFILE_FIELDS, PROFILE_PROTECTED_SHORT_FIELDS, validateProfile, type PersistentProfile } from '@diqier/stratagate'
 import type { ResolvedConfig, StructuredReasoningEffortMode } from './config.js'
 import { dshMessageSource } from './dsh-compatibility.js'
@@ -506,7 +507,7 @@ function topicProjectionPayload(context: TopicProjectionContext, outputTokenBudg
 }
 
 function parseTopicProjection(value: unknown, context: TopicProjectionContext): TopicProjectionResult {
-  const fail = (message: string): never => { throw new Error(`Topic projection validation failed: ${message}`) }
+  const fail = (message: string): never => { throw new TopicProjectionError('validation-failed', message) }
   const raw = object(value)
   if (Object.keys(raw).some((key) => key !== 'topics') || !Array.isArray(raw.topics) || raw.topics.length > 12) {
     fail('expected only topics, with at most 12 entries')
@@ -594,7 +595,13 @@ function parseTopicProjection(value: unknown, context: TopicProjectionContext): 
   return { topics }
 }
 
+// Dedicated bound: DSH accepts explicit maxTokens; defaultMaxTokens is a
+// default, not an advertised hard cap. Exact-route context metadata can lower
+// this request. Unknown provider limits remain explicit provider failures.
+export const TOPIC_OUTPUT_TOKEN_BUDGET = 32_768
+
 export class DshModelBridge {
+  private readonly contextWindows = new Map<string, number>()
   private readonly sessions = new AsyncLocalStorage<{ session?: Session; sessionId: Session['id'] }>()
   private readonly successfulResponses: SuccessfulModelResponse[] = []
   private readonly offCapabilities = new Map<string, 'supported' | 'unsupported'>()
@@ -607,6 +614,7 @@ export class DshModelBridge {
     this.structuredReasoningEffort = config.structuredReasoningEffort ?? 'auto'
     this.ctx.on?.('llm/adapters-updated', () => {
       this.offCapabilities.clear()
+      this.contextWindows.clear()
       for (const listener of this.adaptersUpdatedListeners) listener()
     })
   }
@@ -834,18 +842,19 @@ Use project scope for repository decisions, user scope for stable preferences/id
   }
 
   readonly topicProjector: TopicProjector = async (context: TopicProjectionContext): Promise<TopicProjectionResult> => {
-    const { payload, shownContext } = topicProjectionPayload(context, this.config.maxOutputTokens)
+    const { payload, shownContext } = topicProjectionPayload(context, TOPIC_OUTPUT_TOKEN_BUDGET)
     try {
       const raw = await this.callStructured('topicProjector', TOPIC_PROJECTOR_SYSTEM_PROMPT, payload,
         (value) => { parseTopicProjection(value, shownContext) },
+        { eventCount: shownContext.events.length, candidateTopicCount: shownContext.existingTopics.length },
       )
       return parseTopicProjection(raw, shownContext)
     } catch (error) {
-      // Job diagnostics survive source changes. Retain the validation reason,
-      // never a model response containing forgotten topic names or overviews.
-      if (error instanceof ModelJsonResponseError) throw new Error(error.message.split('\nRaw response preview')[0])
-      if (error instanceof Error && /^StrataGate structured model task timed out after \d+ms$/.test(error.message)) throw new Error(error.message)
-      throw new Error('Topic projection model call failed (provider or route error); raw details omitted from diagnostics')
+      if (error instanceof TopicProjectionError) throw error
+      if (error instanceof Error && /^StrataGate structured model task timed out after \d+ms$/.test(error.message)) {
+        throw new TopicProjectionError('timeout', 'structured model task timed out')
+      }
+      throw new TopicProjectionError('provider-failed', 'provider or route error')
     }
   }
 
@@ -901,7 +910,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
   }
 
   private async callStructured(kind: SuccessfulModelResponseKind, system: string, payload: unknown,
-    validate?: (value: unknown) => void): Promise<unknown> {
+    validate?: (value: unknown) => void, topicMetadata?: Partial<TopicProjectionDiagnostics>): Promise<unknown> {
     const execution = this.sessions.getStore()
     if (!execution) throw new Error('StrataGate model callback ran without an execution context')
     // Structured memory jobs need a bounded machine-readable response. Prefer
@@ -910,11 +919,17 @@ Use project scope for repository decisions, user scope for stable preferences/id
     const baseRoute = this.resolveRoute(execution.session)
     const routeKey = `${baseRoute.provider}\u0000${baseRoute.model}`
     let useOff = await this.shouldUseOff(baseRoute)
-    let lastError: ModelJsonResponseError | undefined
+    const isTopic = kind === 'topicProjector'
+    const topicDiagnostics: Partial<TopicProjectionDiagnostics> = { ...topicMetadata,
+      requestedOutputTokens: TOPIC_OUTPUT_TOKEN_BUDGET, modelCalls: 0 }
+    const topicError = (category: TopicProjectionDiagnostics['category'], reason: string) =>
+      new TopicProjectionError(category, reason, topicDiagnostics)
+    let lastError: ModelJsonResponseError | TopicProjectionError | undefined
     let lastResponse = ''
     let attemptsUsed = 0
     let noAdapterRetried = false
     let graphRetryFeedback = ''
+    let offFallback = false
     for (let attempt = 1; attempt <= JSON_RESPONSE_ATTEMPTS; attempt += 1) {
       attemptsUsed = attempt
       const message = createUserMessage({
@@ -938,9 +953,23 @@ Use project scope for repository decisions, user scope for stable preferences/id
         },
         maxTokens: kind === 'profileMaintenance'
           ? Math.max(this.config.maxOutputTokens, Math.min(12_000, 512 + 2 * Array.from(JSON.stringify(payload)).length))
-          : this.config.maxOutputTokens,
+          : isTopic ? TOPIC_OUTPUT_TOKEN_BUDGET : this.config.maxOutputTokens,
         sessionId: execution.sessionId,
         purpose: 'compaction',
+      }
+      if (isTopic) {
+        const inputTokens = estimateTokens(JSON.stringify({ system: request.system, tools: request.tools, messages: request.messages }))
+        const window = this.contextWindows.get(routeKey)
+        if (window !== undefined && window - inputTokens - 1_024 < 256) {
+          Object.assign(topicDiagnostics, { estimatedInputTokens: inputTokens, maxOutputTokens: 0 })
+          throw topicError('validation-failed', 'topic input exceeds model context capacity')
+        }
+        if (window !== undefined) request.maxTokens = Math.min(TOPIC_OUTPUT_TOKEN_BUDGET, Math.floor(window - inputTokens - 1_024))
+        delete topicDiagnostics.finishReason
+        delete topicDiagnostics.reasoningObserved
+        Object.assign(topicDiagnostics, { estimatedInputTokens: inputTokens, maxOutputTokens: request.maxTokens,
+          modelCalls: (topicDiagnostics.modelCalls ?? 0) + 1,
+          reasoningOff: useOff ? 'requested-unverified' : offFallback ? 'fallback' : 'unavailable' })
       }
       try {
         await this.consumeStructuredStream(request, assembler)
@@ -953,13 +982,19 @@ Use project scope for repository decisions, user scope for stable preferences/id
         if (useOff && isOffRejection(error)) {
           this.offCapabilities.set(routeKey, 'unsupported')
           useOff = false
+          offFallback = true
           this.warnOffFallbackOnce(routeKey, `${baseRoute.provider}/${baseRoute.model} rejected reasoningEffort=off; retrying once without it`)
           attempt -= 1
           continue
         }
+        if (isTopic) {
+          const timedOut = error instanceof Error && /^StrataGate structured model task timed out after \d+ms$/.test(error.message)
+          throw topicError(timedOut ? 'timeout' : 'provider-failed', timedOut ? 'structured model task timed out' : 'provider or route error')
+        }
         throw error
       }
       const finish = assembler.finish
+      if (isTopic) topicDiagnostics.finishReason = finish.kind
       if (finish.kind === 'error' || finish.kind === 'aborted') {
         const failure = new Error(`StrataGate model call failed [${finish.failure.code}]: ${finish.failure.message}`)
         if (!noAdapterRetried && isNoAdapter(finish.failure)) {
@@ -970,28 +1005,38 @@ Use project scope for repository decisions, user scope for stable preferences/id
         if (useOff && isOffRejection(finish.failure)) {
           this.offCapabilities.set(routeKey, 'unsupported')
           useOff = false
+          offFallback = true
           this.warnOffFallbackOnce(routeKey, `${baseRoute.provider}/${baseRoute.model} rejected reasoningEffort=off; retrying once without it`)
           attempt -= 1
           continue
         }
+        if (isTopic) throw topicError('provider-failed', 'provider or route error')
         throw failure
       }
       if (useOff) this.offCapabilities.set(routeKey, 'supported')
       const blocks = assembler.blocks()
       const calls = blocks.filter((block): block is Extract<ContentBlock, { type: 'tool-call' }> => block.type === 'tool-call')
-      const responseForError = `${renderBlocksForDiagnostics(blocks, finish.kind)}\n[finish=${finish.kind}; toolCalls=${calls.length}]`
+      if (isTopic) {
+        topicDiagnostics.reasoningObserved = blocks.some((block) => block.type === 'reasoning' && block.text.trim().length > 0)
+        if (topicDiagnostics.reasoningObserved && useOff) topicDiagnostics.reasoningOff = 'reasoning-observed'
+        // Even syntactically complete arguments cannot prove a truncated task
+        // finished. Reject before parsing, and never attach raw blocks.
+        if (finish.kind === 'max-tokens') throw topicError('max-tokens', 'output token limit reached')
+      }
+      const responseForError = isTopic ? '' : `${renderBlocksForDiagnostics(blocks, finish.kind)}\n[finish=${finish.kind}; toolCalls=${calls.length}]`
       lastResponse = responseForError
       try {
         const expectedTool = STRUCTURED_TOOLS[kind].name
         let parsed: unknown
         if (calls.length !== 1 || calls[0]?.name !== expectedTool) {
           const textFallback = blocks
-            .filter((block): block is Extract<ContentBlock, { type: 'text' | 'reasoning' }> => block.type === 'text' || block.type === 'reasoning')
+            .filter((block): block is Extract<ContentBlock, { type: 'text' | 'reasoning' }> => block.type === 'text' || (!isTopic && block.type === 'reasoning'))
             .map((block) => block.text)
             .join('\n')
           try {
             parsed = parseJsonResponse(textFallback, STRUCTURED_FIELDS[kind])
           } catch {
+            if (isTopic) throw topicError('schema-invalid', 'expected exactly one structured topic call')
             throw new ModelJsonResponseError(
               `StrataGate model response did not call ${expectedTool} exactly once`,
               { response: responseForError },
@@ -1001,6 +1046,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
           try {
             parsed = JSON.parse(calls[0].arguments)
           } catch {
+            if (isTopic) throw topicError('schema-invalid', 'tool arguments are not valid JSON')
             throw new ModelJsonResponseError(
               `StrataGate ${expectedTool} arguments were not valid JSON`,
               { response: responseForError },
@@ -1010,6 +1056,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
         if (kind === 'graphProjector') parsed = normalizeGraphNameProvenance(parsed)
         const violations = validateArgs(STRUCTURED_TOOLS[kind].parameters, parsed)
         if (violations.length > 0) {
+          if (isTopic) throw topicError('schema-invalid', 'structured topic schema mismatch')
           if (kind === 'graphProjector') {
             const paths = violations.flatMap((violation) => violation.match(/nodes\[\d+\]\.metadataProvenance\.name(?:\[\d+\])?/g) ?? [])
             graphRetryFeedback = paths.length > 0
@@ -1017,7 +1064,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
               : ''
           }
           throw new ModelJsonResponseError(
-            `StrataGate ${expectedTool} arguments were invalid: ${kind === 'topicProjector' ? 'structured topic schema mismatch' : violations.join('; ')}`,
+            `StrataGate ${expectedTool} arguments were invalid: ${violations.join('; ')}`,
             { response: responseForError },
           )
         }
@@ -1033,6 +1080,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
         try {
           validate?.(parsed)
         } catch (error) {
+          if (isTopic) throw topicError('validation-failed', error instanceof TopicProjectionError ? error.diagnostics.reason : 'topic semantic validation failed')
           throw new ModelJsonResponseError(`StrataGate ${expectedTool} arguments were invalid: ${error instanceof Error ? error.message : String(error)}`,
             { cause: error, response: responseForError })
         }
@@ -1047,7 +1095,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
         }
         return parsed
       } catch (error) {
-        if (!(error instanceof ModelJsonResponseError)) throw error
+        if (!(error instanceof ModelJsonResponseError) && !(isTopic && error instanceof TopicProjectionError)) throw error
         lastError = finish.kind === 'max-tokens'
           ? new ModelJsonResponseError(
             `StrataGate ${STRUCTURED_TOOLS[kind].name} call was truncated before valid arguments`,
@@ -1060,6 +1108,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
         }
       }
     }
+    if (isTopic && lastError instanceof TopicProjectionError) throw lastError
     const validationDetail = lastError?.message ? `: ${lastError.message}` : ''
     throw new ModelJsonResponseError(
       `StrataGate model did not produce a valid ${STRUCTURED_TOOLS[kind].name} call after ${attemptsUsed} attempt${attemptsUsed === 1 ? '' : 's'}${validationDetail}`,
@@ -1097,6 +1146,7 @@ Use project scope for repository decisions, user scope for stable preferences/id
           timer.unref?.()
         }),
       ])
+      if (Number.isFinite(info.context?.contextWindow) && info.context!.contextWindow > 0) this.contextWindows.set(key, info.context!.contextWindow)
       if (!info.reasoning) return this.currentStructuredReasoningEffort() === 'force-off'
       const supported = info.reasoning.efforts.some(({ id }) => String(id) === 'off')
       this.offCapabilities.set(key, supported ? 'supported' : 'unsupported')
