@@ -958,13 +958,21 @@ Use project scope for repository decisions, user scope for stable preferences/id
         purpose: 'compaction',
       }
       if (isTopic) {
-        const inputTokens = estimateTokens(JSON.stringify({ system: request.system, tools: request.tools, messages: request.messages }))
+        const estimateInput = () => estimateTokens(JSON.stringify({ system: request.system, tools: request.tools, messages: request.messages }))
+        let inputTokens = estimateInput()
         const window = this.contextWindows.get(routeKey)
         if (window !== undefined && window - inputTokens - 1_024 < 256) {
           Object.assign(topicDiagnostics, { estimatedInputTokens: inputTokens, maxOutputTokens: 0 })
           throw topicError('validation-failed', 'topic input exceeds model context capacity')
         }
         if (window !== undefined) request.maxTokens = Math.min(TOPIC_OUTPUT_TOKEN_BUDGET, Math.floor(window - inputTokens - 1_024))
+        // Clamp with the ceiling-sized payload first: replacing its budget with
+        // a smaller integer cannot increase the input estimate. Tell the model
+        // the actual budget on every request, including JSON/off fallback retries.
+        request.messages = [{ ...message, content: [{ type: 'text', text: JSON.stringify({
+          ...(payload as Record<string, unknown>), outputTokenBudget: request.maxTokens,
+        }) }] }]
+        inputTokens = estimateInput()
         delete topicDiagnostics.finishReason
         delete topicDiagnostics.reasoningObserved
         Object.assign(topicDiagnostics, { estimatedInputTokens: inputTokens, maxOutputTokens: request.maxTokens,

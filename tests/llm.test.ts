@@ -4,7 +4,7 @@ import type { EventCard, ExtractionContext, GraphProjectionContext, MemoryBlock,
 import { describe, expect, it, vi } from 'vitest'
 import { ModelJsonResponseError, parseJsonResponse } from '../src/json-response.js'
 import { DshModelBridge } from '../src/llm.js'
-import { emptyProfile, StrataGate, TopicProjectionError } from '@diqier/stratagate'
+import { emptyProfile, estimateTokens, StrataGate, TopicProjectionError } from '@diqier/stratagate'
 
 describe('DeepSeek Harness model JSON parsing', () => {
   it('extracts fenced JSON without being confused by braces in strings', () => {
@@ -1394,13 +1394,33 @@ describe('memory topic model projection', () => {
       reason: 'every supplied batch Event must be assigned to a topic', finishReason: 'stop' });
     expect(JSON.stringify(error)).not.toMatch(/PRIVATE|SQLite/);
   });
-  it('caps only Topic output against advertised route context capacity', async () => {
+  it.each([16000, 8000])('caps only Topic output against advertised route context capacity (%i)', async (contextWindow) => {
     const { bridge, session, calls } = modelBridge([{ text: '{', finish: 'max-tokens' }, { tool: { l0Title: 'ok', l0Tags: [], l1Summary: 'ok', l2Keypoints: [], shouldExtract: false } }],
-      { resolveModelInfo: async () => ({ context: { contextWindow: 16000 } }) });
+      { resolveModelInfo: async () => ({ context: { contextWindow } }) });
     const error = await bridge.run(session, () => bridge.topicProjector(context())).catch((error) => error);
-    expect(calls.mock.calls[0]![0].maxTokens).toBe(16000 - error.diagnostics.estimatedInputTokens - 1024);
+    const request = calls.mock.calls[0]![0];
+    const payload = JSON.parse(request.messages[0].content[0].text);
+    expect(payload.outputTokenBudget).toBe(request.maxTokens);
+    expect(request.maxTokens).toBeLessThan(32768);
+    expect(request.maxTokens).toBeLessThanOrEqual(contextWindow - error.diagnostics.estimatedInputTokens - 1024);
+    expect(error.diagnostics).toMatchObject({ requestedOutputTokens: 32768, maxOutputTokens: request.maxTokens,
+      estimatedInputTokens: estimateTokens(JSON.stringify({ system: request.system, tools: request.tools, messages: request.messages })) });
     await bridge.run(session, () => bridge.summarizer([]));
     expect(calls.mock.calls[1]![0].maxTokens).toBe(256);
+  });
+  it('recomputes the declared Topic budget for the longer JSON repair request', async () => {
+    const { bridge, session, calls } = modelBridge([{ tool: { topics: 'PRIVATE' } }, { text: '{', finish: 'max-tokens' }],
+      { resolveModelInfo: async () => ({ context: { contextWindow: 8000 } }) });
+    const error = await bridge.run(session, () => bridge.topicProjector(context())).catch((error) => error);
+    expect(calls).toHaveBeenCalledTimes(2);
+    for (const [request] of calls.mock.calls) {
+      expect(JSON.parse(request.messages[0].content[0].text).outputTokenBudget).toBe(request.maxTokens);
+    }
+    const first = calls.mock.calls[0]![0];
+    const repaired = calls.mock.calls[1]![0];
+    expect(repaired.maxTokens).toBeLessThan(first.maxTokens);
+    expect(error.diagnostics).toMatchObject({ category: 'max-tokens', requestedOutputTokens: 32768,
+      maxOutputTokens: repaired.maxTokens, modelCalls: 2 });
   });
   it('fails safely before streaming when the input alone exceeds an advertised context window', async () => {
     const { bridge, session, calls } = modelBridge([], { resolveModelInfo: async () => ({ context: { contextWindow: 500 } }) });
@@ -1410,11 +1430,15 @@ describe('memory topic model projection', () => {
   });
   it('records a single explicit off rejection fallback and the final request budget', async () => {
     const { bridge, session, calls } = modelBridge([{ error: 'reasoningEffort off is not supported' }, { text: '{', finish: 'max-tokens' }],
-      { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'off' }] } }) });
+      { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'off' }] }, context: { contextWindow: 8000 } }) });
     const error = await bridge.run(session, () => bridge.topicProjector(context())).catch((error) => error);
     expect(error.diagnostics).toMatchObject({ category: 'max-tokens', reasoningOff: 'fallback', modelCalls: 2 });
     expect(calls.mock.calls[0]![0].reasoningEffort).toBe('off');
     expect(calls.mock.calls[1]![0]).not.toHaveProperty('reasoningEffort');
+    for (const [request] of calls.mock.calls) {
+      expect(JSON.parse(request.messages[0].content[0].text).outputTokenBudget).toBe(request.maxTokens);
+    }
+    expect(error.diagnostics).toMatchObject({ requestedOutputTokens: 32768, maxOutputTokens: calls.mock.calls[1]![0].maxTokens });
   });
   it.each([
     [{ stall: true }, 'timeout'], [{ error: 'PRIVATE PROVIDER RESPONSE' }, 'provider-failed'],
