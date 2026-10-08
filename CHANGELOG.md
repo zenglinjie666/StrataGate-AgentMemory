@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5 - Unreleased
+
+- UI 明确标注裁剪后的默认目录仅含部分内容，在摘要末尾提供“查看完整目录”，可定位并展开全部章节的小节导航，不自动读取事件或展开总览。
+- 默认记忆目录加入 Chapter 下的 Section 标题，继续保留章标题和 description，不注入 `.0` / overview 正文。目录始终限制在 400 个估算 token 内；超限时保留分类、分页和展开入口，先展示章信息，再逐轮补充各章的小节标题。
+- 默认目录单独读取时复用活跃 Memory 或使用只读存储，不启动迁移、派生任务、模型调用或记忆强化。正常 prompt 组装先计算 Auto Context，再生成目录，最终注入仍为目录在前，冷启动不再重复完整读取 Memory。
+- 自动上下文在读取 Block 和检索 Event / Graph 前检查外部 namespace revision，版本变化时刷新缓存；独立 writer 新增或遗忘的 Event 能在同轮自动上下文和目录中一致生效，无更新时继续复用快照。
+
 ## 0.3.4 - Unreleased
 
 - 为 Topic Projection 提供独立的 32,768 token 输出请求上限；根据宿主公布的 context window 保留输入和余量，每次 payload 声明的预算与实际请求一致，包括结构修复和 reasoning fallback。

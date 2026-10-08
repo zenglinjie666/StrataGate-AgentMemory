@@ -11,10 +11,109 @@ import LlmRuntime, { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import { describe, expect, it } from 'vitest'
+import { StrataGate } from '@diqier/stratagate'
+import { SqliteStorage } from '@diqier/stratagate/sqlite'
+import { describe, expect, it, vi, type MockInstance } from 'vitest'
 import * as plugin from '../src/index.js'
 
 describe('DSH plugin composition', () => {
+  it('loads persistent Memory once on cold prompts and refreshes external changes before automatic retrieval', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'stratagate-cold-prompt-'))
+    const database = join(directory, 'memory.db')
+    let query = ''
+    const session = {
+      id: 'cold-prompt', header: { id: 'cold-prompt', version: 0, createdAt: 0, cwd: directory },
+      snapshotEvents: () => [], eventAt: () => undefined,
+      deriveMessages: () => query ? [{ id: 'current-query', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: query }] }] : [],
+    } as unknown as Session
+    const namespace = 'dsh:session:cold-prompt'
+    const ctx = new Context()
+    let load: MockInstance<SqliteStorage['load']> | undefined
+    let open: MockInstance<typeof StrataGate.open> | undefined
+    try {
+      const memory = await StrataGate.open({ database, namespace, blockTurnSize: 1 })
+      try {
+        await memory.appendTurn({ user: '系统开发记录', assistant: '已保存', threadId: 'history' }, { deferDerivation: true })
+        const block = memory.listBlocks()[0]!
+        await memory.addEvent({ id: 'historical-event', title: '架构决策', summary: '采用分层记忆。',
+          sourceBlockId: block.id, sourceMessageIds: [block.l5Raw[0]!.id] })
+        const projection = (await memory.claimNextTopicProjection())!
+        await memory.completeTopicProjection(projection.jobId, { topics: [{
+          title: 'StrataGate', description: '系统设计记录', sourceEventIds: ['historical-event'], overview: [],
+          sections: [{ title: '架构与配置决策', sourceEventIds: ['historical-event'] }],
+        }] })
+      } finally { await memory.close() }
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(SystemPrompt, {})
+      await ctx.plugin(ToolRuntime, { mode: 'native' })
+      await ctx.plugin(AgentDefaultModelConfig, { provider: 'test', model: 'test' })
+      ctx.provide('webServer', { host: '127.0.0.1', port: 10259, register: () => () => {} })
+      await ctx.plugin(plugin, { database, namespaceMode: 'session', blockTurnSize: 1 })
+      // Observe actual persistent opens/full snapshot loads, not mocked context builders.
+      load = vi.spyOn(SqliteStorage.prototype, 'load')
+      open = vi.spyOn(StrataGate, 'open')
+      for (let round = 0; round < 2; round++) {
+        const prompt = await ctx.systemPrompt.assemble({ agent: { session } as Agent })
+        expect(prompt.contexts.filter(({ name }) => name === 'stratagate:memory-directory' || name === 'stratagate:auto-memory')
+          .map(({ name }) => name)).toEqual(['stratagate:memory-directory', 'stratagate:auto-memory'])
+        expect(prompt.contexts.find(({ name }) => name === 'stratagate:memory-directory')?.text)
+          .toContain('  - 架构与配置决策')
+        expect(prompt.contexts.find(({ name }) => name === 'stratagate:auto-memory')?.text)
+          .toContain('[Activated long-term memory]')
+        expect(load.mock.calls.filter(([key]) => key === namespace)).toHaveLength(1)
+        expect(open.mock.calls.filter(([options]) => options.namespace === namespace)).toHaveLength(1)
+      }
+
+      // A separate writer commits after the plugin has cached its Memory.
+      const writer = await StrataGate.open({ database, namespace, blockTurnSize: 1 })
+      try {
+        const block = writer.listBlocks()[0]!
+        await writer.addEvent({ id: 'external-event', title: '外部导入星桥部署', summary: '星桥部署改用 pnpm。',
+          sourceBlockId: block.id, sourceMessageIds: [block.l5Raw[0]!.id] })
+        const projection = (await writer.claimNextTopicProjection())!
+        await writer.completeTopicProjection(projection.jobId, { topics: [{
+          title: '星桥部署', description: '外部导入的部署记录', sourceEventIds: ['external-event'], overview: [],
+          sections: [{ title: '部署与安装', sourceEventIds: ['external-event'] }],
+        }] })
+      } finally { await writer.close() }
+      query = '星桥部署'
+      load.mockClear(); open.mockClear()
+      for (let round = 0; round < 2; round++) {
+        const prompt = await ctx.systemPrompt.assemble({ agent: { session } as Agent })
+        const directoryText = prompt.contexts.find(({ name }) => name === 'stratagate:memory-directory')?.text
+        const autoText = prompt.contexts.find(({ name }) => name === 'stratagate:auto-memory')?.text
+        expect(directoryText).toContain('StrataGate；系统设计记录')
+        expect(directoryText).toContain('星桥部署')
+        expect(directoryText).toContain('  - 部署与安装')
+        expect(autoText).toContain('external-event')
+        expect(autoText).toContain('星桥部署改用 pnpm。')
+        expect(prompt.contexts.filter(({ name }) => name === 'stratagate:memory-directory' || name === 'stratagate:auto-memory')
+          .map(({ name }) => name)).toEqual(['stratagate:memory-directory', 'stratagate:auto-memory'])
+        // One necessary refresh; the directory and next round reuse that snapshot.
+        expect(load.mock.calls.filter(([key]) => key === namespace)).toHaveLength(1)
+        expect(open.mock.calls.filter(([options]) => options.namespace === namespace)).toHaveLength(0)
+      }
+
+      const forgettingWriter = await StrataGate.open({ database, namespace, blockTurnSize: 1 })
+      try { await forgettingWriter.forgetEvent('external-event') }
+      finally { await forgettingWriter.close() }
+      load.mockClear(); open.mockClear()
+      const forgotten = await ctx.systemPrompt.assemble({ agent: { session } as Agent })
+      expect(forgotten.contexts.find(({ name }) => name === 'stratagate:memory-directory')?.text).toContain('StrataGate；系统设计记录')
+      expect(forgotten.contexts.find(({ name }) => name === 'stratagate:auto-memory')?.text).toContain('[Activated long-term memory]')
+      expect(forgotten.contexts.find(({ name }) => name === 'stratagate:memory-directory')?.text).not.toContain('星桥部署')
+      expect(forgotten.contexts.find(({ name }) => name === 'stratagate:auto-memory')?.text).not.toContain('external-event')
+      expect(forgotten.contexts.find(({ name }) => name === 'stratagate:auto-memory')?.text).not.toContain('星桥部署改用 pnpm。')
+      expect(load.mock.calls.filter(([key]) => key === namespace)).toHaveLength(1)
+      expect(open.mock.calls.filter(([options]) => options.namespace === namespace)).toHaveLength(0)
+    } finally {
+      load?.mockRestore()
+      open?.mockRestore()
+      await ctx.fiber.dispose()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('persists a temporary current city until updated or cleared and injects new weather sessions without retrieval', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'stratagate-dsh-location-profile-'))
     const mount = async () => {

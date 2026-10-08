@@ -161,6 +161,16 @@ export async function apply(ctx: Context, config: StrataGateConfig): Promise<() 
     }
     const session = context.agent?.session
     if (!session) return { ...assembled, contexts }
+    // Open/cache Memory through Auto Context first so cold directory navigation
+    // reuses the active space. Keep the directory first in the injected prompt.
+    let autoMemory: { name: string; text: string } | undefined
+    try {
+      const text = await runtime.buildAutoContext(session)
+      autoMemory = { name: 'stratagate:auto-memory', text }
+    } catch (error) {
+      ctx.logger.warn(`stratagate-memory auto-context failed: ${renderError(error)}`)
+      runtime.notePluginError(session, error)
+    }
     try {
       const directory = await runtime.buildMemoryDirectory(session)
       if (directory) contexts.push({ name: 'stratagate:memory-directory', text: directory })
@@ -168,13 +178,7 @@ export async function apply(ctx: Context, config: StrataGateConfig): Promise<() 
       ctx.logger.warn(`stratagate-memory directory failed: ${renderError(error)}`)
       runtime.notePluginError(session, error)
     }
-    try {
-      const text = await runtime.buildAutoContext(session)
-      contexts.push({ name: 'stratagate:auto-memory', text })
-    } catch (error) {
-      ctx.logger.warn(`stratagate-memory auto-context failed: ${renderError(error)}`)
-      runtime.notePluginError(session, error)
-    }
+    if (autoMemory) contexts.push(autoMemory)
     const feedbackSuggestion = runtime.takeFeedbackSuggestion(session)
     if (feedbackSuggestion) contexts.push({ name: 'stratagate:feedback-suggestion', text: feedbackSuggestion })
     return { ...assembled, contexts }

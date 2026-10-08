@@ -684,9 +684,23 @@ export class StrataGateRuntime {
 
   async buildMemoryDirectory(session: Session): Promise<string> {
     await this.flush()
-    const memory = await this.space(session)
-    await this.refreshExternalImportMemory(this.namespaceFor(session), memory)
-    return renderMemoryDirectory(this.visibleTopics(memory), memory.listAllEvents())
+    const namespace = this.namespaceFor(session)
+    const active = this.spaces.get(namespace)
+    if (active) {
+      const memory = await active
+      await this.refreshExternalImportMemory(namespace, memory)
+      return renderMemoryDirectory(this.visibleTopics(memory), memory.listAllEvents())
+    }
+    if (this.config.database === ':memory:' || !existsSync(this.config.database)) return ''
+    // Prompt navigation must not register a workspace, initialize/migrate topic
+    // state, resume derivation, or schedule model work just to read a directory.
+    const storage = new SqliteStorage({ filename: this.config.database, readonly: true })
+    try {
+      const memory = await StrataGate.openWithStorage({ storage, namespace })
+      return renderMemoryDirectory(this.visibleTopics(memory), memory.listAllEvents())
+    } finally {
+      await storage.close()
+    }
   }
 
   private visibleTopics(memory: StrataGate): MemoryTopic[] {
@@ -991,6 +1005,7 @@ export class StrataGateRuntime {
   async buildAutoContext(session: Session): Promise<string> {
     await this.flush()
     const memory = await this.space(session)
+    await this.refreshExternalImportMemory(this.namespaceFor(session), memory)
     const threadId = String(session.id)
     const blockContexts = memory.getBlockContext(threadId)
     if (this.syncDecayedBlockSurface(session, memory, blockContexts)) {
