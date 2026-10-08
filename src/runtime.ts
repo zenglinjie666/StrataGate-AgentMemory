@@ -1856,11 +1856,12 @@ export class StrataGateRuntime {
     return update
   }
 
-  async adminRetryJob(namespace: string, kind: 'block-summary' | 'event-extraction' | 'graph-projection', id: string): Promise<unknown> {
+  async adminRetryJob(namespace: string, kind: 'block-summary' | 'event-extraction' | 'graph-projection' | 'topic-projection', id: string): Promise<unknown> {
     const key = namespace.trim()
     const jobId = id.trim()
     if (!key) throw new TypeError('StrataGate admin namespace must not be empty')
     if (!jobId) throw new TypeError('StrataGate job id must not be empty')
+    if (kind === 'topic-projection') return this.adminRetryTopicProjection(key, jobId)
     const retryKey = `${key}\u0000${kind}\u0000${jobId}`
     const existing = this.adminJobRetryRuns.get(retryKey)
     if (existing) return existing

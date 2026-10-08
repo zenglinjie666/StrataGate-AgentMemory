@@ -2208,8 +2208,8 @@ window.__ModuleLoader__.load({
         h('h3', { className: 'sg-topic-section-heading' }, h('button', { type: 'button', className: 'sg-topic-section-toggle', title: part.uiTitle, 'aria-expanded': open, 'aria-controls': regionId, onClick: () => setOpen((current) => !current) },
           h('span', { className: 'sg-directory-number' }, sectionNumber), h('span', null, part.uiTitle), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
         h(DirectoryFold, { open, id: regionId }, h('div', { className: 'sg-topic-section-body' },
-          h('div', { className: 'sg-topic-overview' }, h('h4', { className: 'sg-topic-overview-heading' }, h('button', { type: 'button', className: 'sg-topic-overview-toggle', 'aria-expanded': overviewOpen, 'aria-controls': regionId + '-overview', onClick: () => setOverviewOpen((current) => !current) }, h('span', { className: 'sg-directory-number' }, sectionNumber + '.0'), h('span', null, '总览'), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
-            h(DirectoryFold, { open: overviewOpen, id: regionId + '-overview' }, (part.paragraphs || []).map((paragraph, paragraphIndex) => h('p', { key: paragraphIndex, className: 'sg-topic-overview-text', 'data-overview-paragraph-index': String(paragraphIndex) }, paragraph.text || '暂无总览')))),
+          (part.paragraphs || []).length ? h('div', { className: 'sg-topic-overview' }, h('h4', { className: 'sg-topic-overview-heading' }, h('button', { type: 'button', className: 'sg-topic-overview-toggle', 'aria-expanded': overviewOpen, 'aria-controls': regionId + '-overview', onClick: () => setOverviewOpen((current) => !current) }, h('span', { className: 'sg-directory-number' }, sectionNumber + '.0'), h('span', null, '总览'), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
+            h(DirectoryFold, { open: overviewOpen, id: regionId + '-overview' }, (part.paragraphs || []).map((paragraph, paragraphIndex) => h('p', { key: paragraphIndex, className: 'sg-topic-overview-text', 'data-overview-paragraph-index': String(paragraphIndex) }, paragraph.text || '暂无总览')))) : null,
           h(TopicEventList, { namespace, revision, topicId, sectionKey: part.uiKey, total: sourceCount, active: active && open, openEvent, numberPrefix: sectionNumber, onDirectoryChanged }))))
     }
 
@@ -2224,10 +2224,10 @@ window.__ModuleLoader__.load({
           h('div', { className: 'sg-topic-chapter-copy' }, h('h2', null, h('button', { type: 'button', className: 'sg-topic-chapter-toggle', title: topic.title, 'aria-expanded': open, 'aria-controls': regionId, 'aria-label': chapterLabel + ' ' + topic.title, onClick: () => setOpen((current) => !current) }, h('span', { className: 'sg-topic-chapter-label' }, chapterLabel), h('span', { className: 'sg-topic-chapter-title' }, topic.title), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))), topic.description ? h('p', { className: 'sg-topic-description' }, topic.description) : null)),
         h(DirectoryFold, { open, id: regionId }, h('div', { className: 'sg-topic-sections' },
           topicSections(topic).map((part, index) => h(TopicSection, { key: part.uiKey, part, chapter: number, index: index + 1, topicId: topic.id, namespace, revision, active: active && open, openEvent, onDirectoryChanged })),
-          !(topic.sections || []).length ? h('p', { className: 'sg-topic-no-overview' }, '这个主题暂无总览，可查看关联事件。') : null,
+          !(topic.sections || []).length ? h('p', { className: 'sg-topic-no-overview' }, '这个主题尚未建立小节，可查看待归类事件。') : null,
           (() => {
-            const remaining = Number(topic.coverage?.omittedEvents || 0)
-            return remaining ? h('details', { className: 'sg-topic-other-events', open: otherOpen, onToggle: (event) => setOtherOpen(event.currentTarget.open) }, h('summary', null, '其他关联事件 · ' + remaining), h(TopicEventList, { namespace, revision, topicId: topic.id, sectionKey: 'uncovered', total: remaining, active: active && open && otherOpen, openEvent, onDirectoryChanged })) : null
+            const remaining = Number(topic.coverage?.unassignedEvents ?? topic.coverage?.omittedEvents ?? 0)
+            return remaining ? h('details', { className: 'sg-topic-other-events', open: otherOpen, onToggle: (event) => setOtherOpen(event.currentTarget.open) }, h('summary', null, '待归类事件 · ' + remaining), h(TopicEventList, { namespace, revision, topicId: topic.id, sectionKey: 'uncovered', total: remaining, active: active && open && otherOpen, openEvent, onDirectoryChanged })) : null
           })())))
     }
 
@@ -2279,12 +2279,15 @@ window.__ModuleLoader__.load({
           bootstrap.failures?.[0] ? h(TopicRetryButton, { key: bootstrap.failures[0].jobId, failure: bootstrap.failures[0], namespace, revision, onDirectoryChanged }) : null,
           failures ? h('button', { type: 'button', className: 'sg-topic-status-details', 'aria-expanded': detailsOpen, 'aria-controls': 'sg-topic-bootstrap-details', onClick: () => setDetailsOpen((current) => !current) }, detailsOpen ? '收起详情' : '查看详情') : null),
         h('p', { className: 'sg-topic-bootstrap-copy' }, working ? '不影响正常使用，未整理记忆仍可正常检索' : '原始记忆仍然保留，可正常检索'),
+        Number(bootstrap.sectionBackfill?.pendingRelations || 0) > 0 ? h('p', { className: 'sg-topic-bootstrap-copy' },
+          '仍有 ' + Number(bootstrap.sectionBackfill.pendingRelations) + ' 项小节归属待补齐'
+          + (Number(bootstrap.sectionBackfill.failedRelations || 0) > 0 ? '，其中 ' + Number(bootstrap.sectionBackfill.failedRelations) + ' 项需要重新整理' : '')) : null,
         failures ? h('p', { className: 'sg-topic-bootstrap-copy' }, '展开详情可重新整理失败批次；提交后按历史额度排队。') : null,
         working && failures ? h('p', { className: 'sg-topic-bootstrap-copy' }, failures + ' 条历史记忆暂未完成整理') : null,
         h(DirectoryFold, { open: detailsOpen, id: 'sg-topic-bootstrap-details' }, h('div', { className: 'sg-topic-failures' },
           (bootstrap.failures || []).map((failure, index) => h('div', { key: failure.jobId, className: 'sg-topic-failure' }, h('p', null, '自动整理已停止' + (failure.attempts ? ' · 已尝试 ' + failure.attempts + ' 次' : '')),
             index > 0 ? h(TopicRetryButton, { failure, namespace, revision, onDirectoryChanged }) : null,
-            h(TopicEventList, { namespace, revision, topicId: 'pending', sectionKey: 'failure:' + failure.jobId, total: Number(failure.eventCount || 0), active: active && detailsOpen, openEvent, onDirectoryChanged }), failure.lastError ? h('details', { className: 'sg-topic-failure-technical' }, h('summary', null, '技术详情'), h('p', null, failure.lastError)) : null)),
+            h(TopicEventList, { namespace, revision, topicId: 'pending', sectionKey: 'failure:' + failure.jobId, total: Number(failure.eventCount || 0), active: active && detailsOpen, openEvent, onDirectoryChanged }), failure.lastError ? h('details', { className: 'sg-topic-failure-technical' }, h('summary', null, '技术详情'), h('p', null, failure.lastError), failure.diagnostics ? h('pre', { className: 'sg-code' }, JSON.stringify(failure.diagnostics, null, 2)) : null) : null)),
           !(bootstrap.failures || []).length ? h('p', null, '部分历史记忆暂未形成主题，请从下方待整理事件或事件时间线查看。') : null)))
     }
 
@@ -2693,7 +2696,7 @@ window.__ModuleLoader__.load({
           if (!found) addLegacyJob(block, 'event-extraction', 'running')
         }
       }
-      const taskLabel = (kind) => kind === 'block-summary' ? '短期记忆压缩' : kind === 'event-extraction' ? '长期记忆提取' : '知识图谱更新'
+      const taskLabel = (kind) => kind === 'block-summary' ? '短期记忆压缩' : kind === 'event-extraction' ? '长期记忆提取' : kind === 'topic-projection' ? '主题整理' : '知识图谱更新'
       const retryKey = statusJobKey
       const technicalStatusText = (status, job) => job?.state === 'terminal-failed'
         ? '终态失败'
@@ -2704,7 +2707,7 @@ window.__ModuleLoader__.load({
       for (const job of jobsByKey.values()) {
         let details = Array.isArray(job.blockDetails) ? job.blockDetails : []
         if (!details.length) {
-          const ids = Array.isArray(job.blockIds) && job.blockIds.length ? job.blockIds : job.id && job.kind !== 'graph-projection' ? [job.id] : []
+          const ids = Array.isArray(job.blockIds) && job.blockIds.length ? job.blockIds : job.id && !['graph-projection', 'topic-projection'].includes(job.kind) ? [job.id] : []
           details = ids.map((id) => blockById.get(id)).filter(Boolean).map((block) => ({
             id: block.id, sourceId: block.id, sequence: block.sequence, title: block.title || block.l0Title,
             threadId: block.threadId, turnRange: block.turnRange, shouldExtract: block.shouldExtract,
@@ -2733,6 +2736,7 @@ window.__ModuleLoader__.load({
         const summaryJob = item.jobs.find((job) => job.kind === 'block-summary')
         const extractionJobs = item.jobs.filter((job) => job.kind === 'event-extraction')
         const graphJobs = item.jobs.filter((job) => job.kind === 'graph-projection')
+        const topicJobs = item.jobs.filter((job) => job.kind === 'topic-projection')
         const summaryFailed = summaryJob && terminalFailedKeys.has(statusJobKey(summaryJob))
         const extractionFailed = extractionJobs.some((job) => terminalFailedKeys.has(statusJobKey(job)))
         const graphFailed = graphJobs.some((job) => terminalFailedKeys.has(statusJobKey(job)))
@@ -2752,6 +2756,8 @@ window.__ModuleLoader__.load({
           if (jobs.length) return { kind: 'waiting', mark: '○', label: '排队中' }
           return { kind: 'waiting', mark: '○', label: emptyLabel }
         }
+        if (topicJobs.length === item.jobs.length) return [['主题整理', stageForJobs(topicJobs,
+          topicJobs.some((job) => terminalFailedKeys.has(statusJobKey(job))), '等待整理')]]
         const extractionStage = extractionFailed
           ? stageForJobs(extractionJobs, true, '等待提取')
           : extractionJobs.length
@@ -2807,7 +2813,7 @@ window.__ModuleLoader__.load({
         setFeedback({ kind: '', text: taskLabel(job.kind) + ' 正在处理…' })
         return api('jobs/retry', { namespace, kind: job.kind, jobId: job.id }, { method: 'POST' })
           .then(() => refresh({ propagateError: true }))
-          .then(() => setFeedback({ kind: 'done', text: '任务已完成，状态已更新' }))
+          .then(() => setFeedback({ kind: 'done', text: job.kind === 'topic-projection' ? '已重新排队，按历史额度继续整理' : '任务已完成，状态已更新' }))
           .catch(async (reason) => {
             const message = String(reason?.message || reason)
             setRetryErrors((current) => ({ ...current, [key]: message }))
@@ -2859,6 +2865,7 @@ window.__ModuleLoader__.load({
                   job.nextRetryAt ? h('div', { className: 'sg-process-job-meta' }, '计划重试：' + formatTime(job.nextRetryAt)) : null,
                   failed && !job.nextRetryAt ? h('div', { className: 'sg-process-job-meta' }, '自动重试已停止') : null,
                   failed ? h('pre', { className: 'sg-job-error sg-code' }, job.lastErrorFull || job.lastError || '没有记录技术错误。') : null,
+                  job.kind === 'topic-projection' && job.diagnostics ? h('pre', { className: 'sg-code' }, JSON.stringify(job.diagnostics, null, 2)) : null,
                   failed ? h('div', { className: 'sg-process-job-actions' }, h('span', { className: 'sg-status-feedback failed', role: retryErrors[key] ? 'alert' : undefined }, retryErrors[key] || ''), h('button', { type: 'button', className: 'sg-save-button', disabled: busy, onClick: () => void retryJob(job) }, busy ? '正在处理…' : '重试此任务')) : null)
               })) : null
             )
@@ -3279,6 +3286,7 @@ window.__ModuleLoader__.load({
           attempts: job?.attempts,
           lastError: job?.lastErrorFull || job?.lastError,
           updatedAt: job?.updatedAt,
+          ...(job?.kind === 'topic-projection' ? { diagnostics: job?.diagnostics } : {}),
         })) : []
         lines.push('', '## 诊断日志', '', '```json', redactedJson({ frontendError: recentError || null, failedJobs }), '```')
       }

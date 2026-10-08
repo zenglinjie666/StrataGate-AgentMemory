@@ -516,7 +516,7 @@ export class StrataGate {
 
   private async initializeTopicBootstrap(): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (this.topicDirectory.bootstrap()?.projectorVersion === MEMORY_TOPIC_PROJECTOR_VERSION) return;
+      if (!this.topicDirectory.needsInitialization()) return;
       try {
         await this.commitMutation(() => this.topicDirectory.initializeBootstrap(this.listAllEvents(), toUtc8Iso(this.now())));
         return;

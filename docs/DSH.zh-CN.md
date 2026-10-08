@@ -172,6 +172,12 @@ config:
   # model: deepseek-chat
 ```
 
+Topic Projection 使用独立的 32,768 token 输出上限；若宿主公布了模型 context window，会扣除估算输入和 1,024 token 余量后进一步降低上限。其他记忆任务继续使用原有预算策略。宿主的 `defaultMaxTokens` 是默认值，不代表模型硬上限；未公布的 provider 限制仍可能导致调用失败。
+
+Topic 技术详情及 `/api/stratagate/overview` 的任务详情会区分 `max-tokens`、`schema-invalid`、`validation-failed`、`timeout`、`provider-failed`、`worker-failed` 和 `source-changed`。诊断仅记录安全校验规则、数量、估算 token、请求预算、finish reason、reasoning off 请求/回退状态和尝试次数，不记录原始聊天、Event/Topic 正文、完整模型响应或 reasoning。`requested-unverified` 表示发送了 off 请求，不能证明 provider 实际关闭了 reasoning；若仍观察到 reasoning，会明确标记。
+
+只有明确的 `finish=max-tokens` 才会二分失败批次，最多四层，单条批次最多尝试三次；每个历史子批次仍受共用 Bootstrap 额度约束，不裁剪 Event 证据。其他错误维持原有有限重试与退避。自动尝试耗尽后，可通过目录“重新整理这 N 条”（`POST /api/stratagate/topics/retry`，携带 namespace、jobId 和 expectedRevision），或 `POST /api/stratagate/jobs/retry?namespace=...&kind=topic-projection&jobId=...` 重新排队。两条路径均开启新 jobId 周期，检查来源版本并拒绝旧结果，状态在重启后保留。升级不会自动复活历史终态失败。
+
 配置文件中的 `blockTurnSize` 和 `blockDecayLambda` 是初始后备值；一旦在“高级设置”中修改，持久化的界面值优先生效。λ 默认值为 `0.3`；数字越小，记忆遗忘越慢、消耗 token 越多，不建议大于 `0.4`。
 
 `project` 会根据规范化后的会话工作目录生成稳定的命名空间；`session` 会隔离每个 DSH 会话；`global` 则让所有会话共享同一个命名空间。
