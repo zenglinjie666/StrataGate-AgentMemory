@@ -1005,6 +1005,7 @@ export class StrataGateRuntime {
   async buildAutoContext(session: Session): Promise<string> {
     await this.flush()
     const memory = await this.space(session)
+    await this.refreshExternalImportMemory(this.namespaceFor(session), memory)
     const threadId = String(session.id)
     const blockContexts = memory.getBlockContext(threadId)
     if (this.syncDecayedBlockSurface(session, memory, blockContexts)) {
