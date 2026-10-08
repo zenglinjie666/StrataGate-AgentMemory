@@ -2213,9 +2213,10 @@ window.__ModuleLoader__.load({
           h(TopicEventList, { namespace, revision, topicId, sectionKey: part.uiKey, total: sourceCount, active: active && open, openEvent, numberPrefix: sectionNumber, onDirectoryChanged }))))
     }
 
-    function TopicChapter({ topic, number, namespace, revision, active, openEvent, onDirectoryChanged }) {
+    function TopicChapter({ topic, number, namespace, revision, active, openEvent, onDirectoryChanged, expandRequest = 0 }) {
       const [open, setOpen] = React.useState(true)
       const [otherOpen, setOtherOpen] = React.useState(false)
+      React.useEffect(() => { if (expandRequest > 0) setOpen(true) }, [expandRequest])
       const regionId = 'sg-topic-chapter-' + encodeURIComponent(topic.id)
       const chapterLabel = '第' + chapterOrdinal(number) + '章'
       return h('article', { className: 'sg-topic-chapter', 'data-topic-id': topic.id },
@@ -2294,6 +2295,8 @@ window.__ModuleLoader__.load({
     function TopicDirectory({ directory, namespace, active = true, openEvent, onDirectoryChanged }) {
       const [pendingOpen, setPendingOpen] = React.useState(false)
       const [invalidatedRevision, setInvalidatedRevision] = React.useState(null)
+      const [expandRequest, setExpandRequest] = React.useState(0)
+      const chaptersRef = React.useRef(null)
       const revision = directory?.revision || ''
       const blocked = invalidatedRevision === revision
       // A successful dashboard read is a fresh snapshot even if content changed
@@ -2303,13 +2306,22 @@ window.__ModuleLoader__.load({
       const invalidate = React.useCallback(() => { setInvalidatedRevision(revision); return onDirectoryChanged?.() }, [revision, onDirectoryChanged])
       const topics = directory?.topics || []
       const pendingTotal = Number(directory?.pending?.total || 0)
+      const contextSummary = directory?.context?.split('\n')[2] || ''
+      const contextTruncated = contextSummary.startsWith('共 ') && contextSummary.includes('。目录已裁剪；完整目录用 memory_list_topics(')
+      const showCompleteDirectory = () => {
+        setExpandRequest((request) => request + 1)
+        chaptersRef.current?.scrollIntoView({ block: 'start' })
+        chaptersRef.current?.querySelector('.sg-topic-chapter-toggle')?.focus({ preventScroll: true })
+      }
       return h('section', { className: 'sg-topic-directory', 'data-testid': 'stratagate-topic-directory', 'aria-label': '主题目录' },
-        h('header', { className: 'sg-topic-directory-intro' }, h('h2', null, '默认注入上下文'), h('p', null, '轻量目录默认进入上下文，帮助 Agent 找到记忆主题；具体事实仍来自事件和知识图谱。'),
-          directory?.context && !blocked ? h('details', { className: 'sg-topic-context' }, h('summary', null, '查看目录内容'), h('pre', null, directory.context)) : null),
+        h('header', { className: 'sg-topic-directory-intro' }, h('h2', null, '默认注入上下文'), h('p', null, '轻量目录摘要默认进入上下文；完整章节与小节可在下方查看，具体事实仍来自事件和知识图谱。'),
+          directory?.context && !blocked ? h('details', { className: 'sg-topic-context' }, h('summary', null, contextTruncated ? '查看目录摘要（部分内容）' : '查看目录内容'), h('pre', null, directory.context),
+            contextTruncated ? h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 8px', marginTop: '8px' } },
+              h('span', null, '…… 此处仅显示部分章节与小节。'), topics.length ? h('button', { type: 'button', className: 'sg-topic-status-details', onClick: showCompleteDirectory }, '查看完整目录') : null) : null) : null),
         blocked ? h('p', { className: 'sg-topic-read-error', role: 'status' }, '目录已有更新，正在重新读取。', h('button', { type: 'button', onClick: onDirectoryChanged }, '重新读取目录')) : null,
         h('div', { hidden: blocked }, h(TopicBootstrapNotice, { bootstrap: directory?.bootstrap, namespace, revision: pageRevision, active: active && !blocked, openEvent, onDirectoryChanged: invalidate }),
           !directory ? h('p', { className: 'sg-topic-empty', role: 'status' }, '暂时无法读取主题目录，请稍后重新打开。') : !topics.length && !pendingTotal ? h('div', { className: 'sg-topic-empty' }, h('h3', null, '还没有长期记忆'), h('p', null, '产生长期事件后，主题会在这里逐步整理成目录。')) : null,
-          topics.map((topic, index) => h(TopicChapter, { key: topic.id, topic, number: index + 1, namespace, revision: pageRevision, active: active && !blocked, openEvent, onDirectoryChanged: invalidate })),
+          h('div', { ref: chaptersRef }, topics.map((topic, index) => h(TopicChapter, { key: topic.id, topic, number: index + 1, namespace, revision: pageRevision, active: active && !blocked, openEvent, onDirectoryChanged: invalidate, expandRequest }))),
           pendingTotal ? h('section', { className: 'sg-topic-pending', 'aria-label': '待整理事件' }, h('h2', { className: 'sg-topic-pending-heading' }, h('button', { type: 'button', className: 'sg-topic-pending-toggle', 'aria-expanded': pendingOpen, 'aria-controls': 'sg-topic-pending-events', onClick: () => setPendingOpen((value) => !value) }, h('span', null, '待整理'), h('span', null, pendingTotal + ' 条事件'), h('span', { className: 'sg-directory-chevron', 'aria-hidden': 'true' }, '›'))),
             h(DirectoryFold, { open: pendingOpen, id: 'sg-topic-pending-events' }, h('p', null, '这些记忆尚未形成稳定主题，仍可直接查看原事件。'), h(TopicEventList, { namespace, revision: pageRevision, topicId: 'pending', total: pendingTotal, active: active && !blocked && pendingOpen, openEvent, onDirectoryChanged: invalidate, expandLabel: '查看全部待整理', collapseLabel: '收起待整理事件' }))) : null))
     }

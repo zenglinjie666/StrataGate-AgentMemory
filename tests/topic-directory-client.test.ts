@@ -180,6 +180,54 @@ function pageReply(url: string, items: any[], total: number, nextOffset: number 
 }
 
 describe('Topic Directory client interactions', () => {
+  it('marks truncated context as partial and opens the complete chapter navigation without reading Events', async () => {
+    const client = clientRenderer(true)
+    const directory = fixture()
+    directory.context = '[StrataGate 记忆目录]\n仅供导航，不是事实证据。\n共 2 项；分类：work（工作与结果 2）。目录已裁剪；完整目录用 memory_list_topics(category, offset) 分页。\n- topic-a：记忆架构'
+    const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() }
+    let tree = client.render(client.TopicDirectory, props)
+    expect(find(tree, (node) => node.type === 'summary').map((node) => node.text)).toContain('查看目录摘要（部分内容）')
+    expect(tree.text).toContain('…… 此处仅显示部分章节与小节。')
+    expect(find(tree, (node) => node.type === 'pre')[0]!.text).toBe(directory.context)
+    const chapterButtons = () => find(tree, (node) => node.props.className === 'sg-topic-chapter-toggle')
+    for (const button of chapterButtons()) button.props.onClick()
+    tree = client.render(client.TopicDirectory, props)
+    expect(chapterButtons().every((button) => button.props['aria-expanded'] === false)).toBe(true)
+    const focus = vi.fn(); const scrollIntoView = vi.fn(); const querySelector = vi.fn(() => ({ focus }))
+    find(tree, (node) => Boolean(node.props.ref))[0]!.props.ref.current = { scrollIntoView, querySelector }
+    buttons(tree, '查看完整目录')[0]!.props.onClick()
+    client.render(client.TopicDirectory, props); await client.flush(); tree = client.render(client.TopicDirectory, props)
+    expect(chapterButtons()).toHaveLength(directory.topics.length)
+    expect(chapterButtons().every((button) => button.props['aria-expanded'] === true)).toBe(true)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' })
+    expect(querySelector).toHaveBeenCalledWith('.sg-topic-chapter-toggle')
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+    expect(find(tree, (node) => node.props.className === 'sg-topic-section-toggle').length).toBeGreaterThan(0)
+    expect(find(tree, (node) => node.props.className === 'sg-topic-section-toggle').every((node) => node.props['aria-expanded'] === false)).toBe(true)
+    expect(client.fetch).not.toHaveBeenCalled()
+    chapterButtons()[0]!.props.onClick(); tree = client.render(client.TopicDirectory, props)
+    expect(chapterButtons()[0]!.props['aria-expanded']).toBe(false)
+    buttons(tree, '查看完整目录')[0]!.props.onClick()
+    client.render(client.TopicDirectory, props); await client.flush(); tree = client.render(client.TopicDirectory, props)
+    expect(chapterButtons()[0]!.props['aria-expanded']).toBe(true)
+    expect(client.fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not label a complete or absent context as truncated', () => {
+    const client = clientRenderer()
+    const directory = fixture()
+    directory.context = '[StrataGate 记忆目录]\n仅供导航，不是事实证据。\n- topic-a：目录已裁剪 的处理记录'
+    const props = { directory, namespace: 'dsh:project:test', openEvent: vi.fn() }
+    let tree = client.render(client.TopicDirectory, props)
+    expect(find(tree, (node) => node.type === 'summary').map((node) => node.text)).toContain('查看目录内容')
+    expect(tree.text).not.toContain('部分章节与小节')
+    expect(buttons(tree, '查看完整目录')).toHaveLength(0)
+    directory.context = ''
+    tree = client.render(client.TopicDirectory, props)
+    expect(find(tree, (node) => node.props.className === 'sg-topic-context')).toHaveLength(0)
+    expect(buttons(tree, '查看完整目录')).toHaveLength(0)
+  })
+
   it('shows independently assigned Events without a summary or an other-events bucket', async () => {
     const client = clientRenderer(true); const directory = fixture();
     directory.topics = [directory.topics[0]!]; const chapter = directory.topics[0]!;
